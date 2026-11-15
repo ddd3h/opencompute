@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 880" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" font-size="16" fill="#0f172a">
+<title>クレートの依存関係</title><desc>矢印は土台から、それを使うクレートへ向かいます。protocolとlbmを土台に、scheduler、network、runtime、opencompute、client、serverが依存します。guestは独立しています。</desc>
+<defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M1 1 8 4 1 7" fill="none" stroke="#64748b" stroke-width="2"/></marker></defs>
+<rect width="960" height="880" rx="10" fill="white"/><text x="32" y="49" font-size="28" font-weight="bold">クレートの依存関係</text><text x="32" y="82" fill="#64748b">矢印：土台 → それを使うクレート（依存先 → 依存元）</text>
+<g fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#a)"><path d="M290 190v35H132v85"/><path d="M330 190v55h34v65"/><path d="M370 190v35h226v85"/><path d="M410 190v15h418v105"/><path d="M720 190v75H636v45"/><path d="M780 190v95h88v25"/><path d="M364 420v55h60v45"/><path d="M596 420v55H516v45"/><path d="M132 420v280"/><path d="M470 620v45H240v35"/><path d="M828 420v240H300v40"/></g>
+<g stroke-width="2"><rect x="170" y="110" width="360" height="80" rx="10" fill="#f1f5f9" stroke="#64748b"/><rect x="660" y="110" width="268" height="80" rx="10" fill="#f1f5f9" stroke="#64748b"/>
+<rect x="32" y="310" width="200" height="110" rx="10" fill="#dbeafe" stroke="#2563eb"/><rect x="264" y="310" width="200" height="110" rx="10" fill="#dbeafe" stroke="#2563eb"/><rect x="496" y="310" width="200" height="110" rx="10" fill="#dcfce7" stroke="#16a34a"/><rect x="728" y="310" width="200" height="110" rx="10" fill="#dbeafe" stroke="#2563eb"/>
+<rect x="350" y="520" width="240" height="100" rx="10" fill="#dcfce7" stroke="#16a34a"/><rect x="60" y="700" width="280" height="100" rx="10" fill="#dbeafe" stroke="#2563eb"/><rect x="600" y="710" width="328" height="130" rx="10" fill="#fef3c7" stroke="#f59e0b"/></g>
+<g text-anchor="middle"><text x="350" y="141" font-size="20" font-weight="bold">protocol</text><text x="350" y="170">土台: ID・メッセージ・フレーム</text><text x="794" y="141" font-size="20" font-weight="bold">lbm</text><text x="794" y="170">D2Q9流体の計算核</text>
+<text x="132" y="341" font-size="20" font-weight="bold">scheduler</text><text x="132" y="372"><tspan x="132">タスクの順番と</tspan><tspan x="132" dy="25">再割り当て</tspan></text>
+<text x="364" y="341" font-size="20" font-weight="bold">network</text><text x="364" y="372"><tspan x="364">iroh:</tspan><tspan x="364" dy="25">暗号化P2P通信</tspan></text>
+<text x="596" y="341" font-size="20" font-weight="bold">runtime</text><text x="596" y="372"><tspan x="596">builtin + Wasmtime</tspan><tspan x="596" dy="25">サンドボックス</tspan></text>
+<text x="828" y="337" font-size="16" font-weight="bold">compute-api</text><text x="828" y="362" font-size="18" font-weight="bold">= opencompute</text><text x="828" y="391" font-size="15">利用者向けAPI: Cluster</text>
+<text x="470" y="559" font-size="20" font-weight="bold">client</text><text x="470" y="591">ワーカー</text><text x="200" y="739" font-size="20" font-weight="bold">server</text><text x="200" y="771">司令塔</text>
+<text x="764" y="741" font-size="20" font-weight="bold">guest</text><text x="764" y="770">WASM側ヘルパー、依存なし</text><text x="764" y="799" font-size="14"><tspan x="764">wasm32向け。</tspan><tspan x="764" dy="22">ネットワーク系は一切リンクしない</tspan></text></g>
+<rect x="668" y="630" width="125" height="27" rx="10" fill="white"/><text x="678" y="649" font-size="14" fill="#64748b">CLI のみ</text>
+</svg>

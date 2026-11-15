@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif">
+<title>チェックポイントから巻き戻して計算を再開する</title><desc>500ステップごとにサーバーへ保存する。1300ステップでPCが停止すると1000ステップの保存状態へ戻り、epochを1増やし、残りのPCで2000ステップまで再計算する。古いepochの返信とハロは無視する。</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#2563eb"/></marker><marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#dc2626"/></marker><g id="flag" stroke="#64748b" stroke-width="2"><path d="M0 0V-49H38L28-34H0" fill="#f1f5f9"/></g></defs>
+<rect width="960" height="600" rx="10" fill="white"/><text x="32" y="48" font-size="28" font-weight="bold" fill="#0f172a">停止しても、直近の保存状態から再開する</text>
+<text x="40" y="91" font-size="18" fill="#64748b">チェックポイントは500ステップごと（保存はサーバー）</text>
+<rect x="40" y="116" width="880" height="356" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+<text x="63" y="151" font-size="17" fill="#0f172a">ステップ</text>
+<path d="M90 230H885" stroke="#64748b" stroke-width="2" marker-end="url(#a)"/>
+<g><use href="#flag" x="90" y="230"/><use href="#flag" x="280" y="230"/><use href="#flag" x="470" y="230"/><use href="#flag" x="660" y="230"/><use href="#flag" x="850" y="230"/></g>
+<g fill="#0f172a" font-size="17" text-anchor="middle"><text x="90" y="260">0</text><text x="280" y="260">500</text><text x="470" y="260">1000</text><text x="660" y="260">1500</text><text x="850" y="260">2000</text></g>
+<path d="M90 230H575" stroke="#2563eb" stroke-width="5" marker-end="url(#a)"/>
+<path d="M574 218 594 242M594 218 574 242" stroke="#dc2626" stroke-width="5"/>
+<rect x="535" y="134" width="172" height="40" rx="10" fill="#fee2e2"/><text x="550" y="160" fill="#dc2626" font-size="18">PC が停止</text><path d="M584 176V207" stroke="#dc2626" stroke-width="2"/>
+<text x="584" y="282" font-size="16" text-anchor="middle" fill="#dc2626">約1300</text>
+<path d="M584 292V330H470V278" fill="none" stroke="#dc2626" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#r)"/>
+<text x="65" y="310" fill="#dc2626" font-size="17"><tspan x="65">直近のチェックポイントまで</tspan><tspan x="65" dy="26">巻き戻し (epoch +1)</tspan></text>
+<path d="M470 348V405H875" fill="none" stroke="#16a34a" stroke-width="4" marker-end="url(#a)"/>
+<text x="493" y="385" font-size="18" fill="#16a34a">残りのPCで計算を再開 → 続行</text>
+<rect x="63" y="369" width="350" height="74" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/><text x="80" y="399" font-size="17" fill="#0f172a"><tspan x="80">1000→1300 の計算はやり直し</tspan><tspan x="80" dy="25">保存以降の途中状態は使わない</tspan></text>
+<rect x="40" y="498" width="880" height="70" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+<path d="M66 517H93V537Q80 554 66 537Z" fill="white" stroke="#2563eb" stroke-width="2"/><text x="113" y="541" font-size="20" fill="#0f172a">古い epoch の返信・ハロは無視される</text>
+</svg>

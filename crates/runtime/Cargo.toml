@@ -1,0 +1,18 @@
+[package]
+name = "opencompute-runtime"
+description = "Task execution for OpenCompute: built-in functions and a sandboxed Wasmtime runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+opencompute-protocol.workspace = true
+opencompute-lbm = { path = "../lbm" }
+wasmtime.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+wat = "1"

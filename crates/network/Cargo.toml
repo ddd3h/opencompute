@@ -1,0 +1,16 @@
+[package]
+name = "opencompute-network"
+description = "iroh-based P2P transport, join tickets and key management for OpenCompute"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+opencompute-protocol.workspace = true
+iroh.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rand.workspace = true

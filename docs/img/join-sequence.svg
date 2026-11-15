@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1040" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" font-size="17" fill="#0f172a">
+<title>参加から離脱までの流れ</title><desc>利用者の同意後、Clientがチケットの公開鍵へ接続し、Joinを送ります。サーバーはトークンと値を検証して参加を受け付けます。その後、定期的なHeartbeat、タスクの割り当てと結果の返送を行い、Ctrl-Cで離脱します。不一致のトークンは拒否します。</desc>
+<defs><marker id="b" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M1 1 8 4 1 7" fill="none" stroke="#2563eb" stroke-width="2"/></marker><marker id="g" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M1 1 8 4 1 7" fill="none" stroke="#16a34a" stroke-width="2"/></marker></defs>
+<rect width="960" height="1040" rx="10" fill="white"/><text x="32" y="49" font-size="28" font-weight="bold">参加から離脱までの流れ</text>
+<rect x="90" y="86" width="180" height="60" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/><text x="180" y="124" text-anchor="middle" font-weight="bold">サーバー</text><rect x="670" y="86" width="180" height="60" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/><text x="760" y="124" text-anchor="middle" font-weight="bold">Client</text>
+<path d="M180 146v853M760 146v853" stroke="#64748b" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="565" y="168" width="360" height="50" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/><text x="745" y="200" text-anchor="middle">0　利用者が y で同意</text>
+<text x="470" y="250" text-anchor="middle"><tspan x="470">1　チケットの公開鍵に接続</tspan><tspan x="470" dy="26" font-size="16">(QUIC/TLS: 相手の鍵を確認)</tspan></text><path d="M760 294H180" stroke="#16a34a" stroke-width="2" marker-end="url(#g)"/>
+<text x="470" y="335" text-anchor="middle">2　Join{トークン, CPU/メモリ, 名前}</text><path d="M760 352H180" stroke="#16a34a" stroke-width="2" marker-end="url(#g)"/>
+<rect x="32" y="378" width="386" height="55" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/><text x="225" y="412" text-anchor="middle">3　トークン検査・値の検証</text>
+<rect x="464" y="378" width="461" height="55" rx="10" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/><text x="694" y="412" text-anchor="middle" font-size="16" fill="#dc2626">トークン不一致 → JoinRejected</text>
+<text x="470" y="477" text-anchor="middle">4　JoinAccepted{node_id, heartbeat間隔}</text><path d="M180 495H760" stroke="#2563eb" stroke-width="2" marker-end="url(#b)"/>
+<rect x="105" y="535" width="730" height="129" rx="10" fill="#f1f5f9" fill-opacity="0.8" stroke="#64748b" stroke-width="2"/><text x="125" y="564" font-size="14" fill="#64748b">繰り返し（参加中）</text><text x="470" y="605" text-anchor="middle">5　Heartbeat(数秒ごと)</text><path d="M760 626H180" stroke="#16a34a" stroke-width="2" marker-end="url(#g)"/>
+<text x="470" y="708" text-anchor="middle">6　Assign(タスク)</text><path d="M180 727H760" stroke="#2563eb" stroke-width="2" marker-end="url(#b)"/>
+<text x="470" y="775" text-anchor="middle">7　TaskStarted → TaskResult</text><text x="470" y="803" text-anchor="middle" font-size="16">(出力のハッシュ付き)</text><path d="M760 824H180" stroke="#16a34a" stroke-width="2" marker-end="url(#g)"/>
+<text x="470" y="891" text-anchor="middle">8　Leave(Ctrl-C)</text><path d="M760 911H180" stroke="#16a34a" stroke-width="2" marker-end="url(#g)"/>
+<rect x="297" y="960" width="366" height="47" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/><text x="480" y="990" text-anchor="middle" font-size="16">参加受付後、タスクの実行と結果の返送へ</text>
+</svg>

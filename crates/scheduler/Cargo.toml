@@ -1,0 +1,11 @@
+[package]
+name = "opencompute-scheduler"
+description = "FIFO task scheduler state machine for OpenCompute (no I/O)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+opencompute-protocol.workspace = true
+serde.workspace = true
+postcard.workspace = true

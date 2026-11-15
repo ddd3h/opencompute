@@ -1,0 +1,12 @@
+[package]
+name = "fibonacci"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+opencompute-guest.workspace = true
+postcard.workspace = true
+serde.workspace = true

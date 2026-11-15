@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 700" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" fill="#0f172a">
+<title>保存されるデータと再起動後の動き</title><desc>サーバーはジョブと結果とチェックポイント、WASM、鍵と参加トークンを保存する。再起動後は結果の取得、タスクの再待機、チェックポイントからの再開、クライアントの再接続ができる。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#2563eb"/></marker></defs>
+<rect width="960" height="700" rx="10" fill="white"/>
+<text x="32" y="48" font-size="28" font-weight="bold">保存されるものと、再起動後の動き</text>
+<rect x="32" y="80" width="896" height="282" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+<g stroke="#2563eb" stroke-width="2" fill="white"><rect x="54" y="99" width="42" height="16" rx="5"/><rect x="54" y="121" width="42" height="16" rx="5"/></g><g fill="#16a34a"><circle cx="86" cy="107" r="3"/><circle cx="86" cy="129" r="3"/></g>
+<text x="112" y="128" font-size="20" font-weight="bold">サーバーの保存領域</text>
+<g fill="#f1f5f9" stroke="#64748b" stroke-width="2"><path d="M56 176 C56 154 320 154 320 176 V328 C320 350 56 350 56 328Z"/><ellipse cx="188" cy="176" rx="132" ry="16"/><path d="M344 176 C344 154 608 154 608 176 V328 C608 350 344 350 344 328Z"/><ellipse cx="476" cy="176" rx="132" ry="16"/><rect x="632" y="160" width="272" height="160" rx="10"/></g>
+<text x="76" y="217" font-size="18" font-weight="bold">state.bin</text><text x="76" y="244" font-size="16"><tspan x="76">ジョブ・結果・</tspan><tspan x="76" dy="24">チェックポイント。</tspan><tspan x="76" dy="24">変化があれば約0.1秒ごとに</tspan><tspan x="76" dy="24">上書き保存</tspan></text>
+<text x="364" y="217" font-size="18" font-weight="bold">modules/</text><text x="364" y="249" font-size="16"><tspan x="364">アップロードしたWASM。</tspan><tspan x="364" dy="25">ハッシュ名</tspan></text>
+<path d="M653 181 v18 h24 v-18 a12 12 0 0 0-24 0Z" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/><text x="652" y="236" font-size="18" font-weight="bold">server.key / token</text><text x="652" y="271" font-size="16">鍵と参加の合言葉</text>
+<path d="M480 363 V410" fill="none" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/><rect x="503" y="373" width="100" height="32" rx="10" fill="#fef3c7"/><text x="529" y="396" font-size="18" font-weight="bold">再起動</text>
+<rect x="32" y="424" width="896" height="244" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<text x="56" y="459" font-size="20" font-weight="bold" fill="#16a34a">再起動後</text>
+<text x="56" y="497" font-size="18"><tspan x="56">① 完了した結果はそのまま取得できる</tspan><tspan x="56" dy="36">② 未完了のタスクは待機に戻る</tspan><tspan x="56" dy="36">③ ステートフルジョブはチェックポイントから再開</tspan><tspan x="56" dy="36">④ Clientは自動で再接続（固定ポートなら古いチケットでOK）</tspan></text>
+</svg>

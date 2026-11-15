@@ -1,0 +1,33 @@
+[package]
+name = "opencompute-server"
+description = "OpenCompute coordinator: accepts workers, schedules tasks, collects results"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "opencompute_server"
+
+[[bin]]
+name = "opencompute-server"
+path = "src/main.rs"
+
+[dependencies]
+opencompute-protocol.workspace = true
+opencompute-scheduler.workspace = true
+opencompute-network.workspace = true
+opencompute-client.workspace = true
+opencompute = { package = "opencompute-compute-api", path = "../compute-api" }
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+postcard.workspace = true
+serde.workspace = true
+opencompute-runtime.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+wat = "1"

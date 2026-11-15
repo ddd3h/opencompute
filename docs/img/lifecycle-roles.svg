@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" fill="#0f172a">
+<title>誰が何をする？</title><desc>利用者はWASMコードとバッチ呼び出しを作り結果を受け取る。サーバー運用者は起動、チケット配布、監視を担当する。PCの持ち主は参加に同意し資源の上限を決め、いつでも抜けられる。各役割に操作例を示す。</desc>
+<rect width="960" height="720" rx="10" fill="white"/><text x="32" y="48" font-size="28" font-weight="bold">誰が何をする？</text>
+<g stroke-width="2"><rect x="32" y="80" width="288" height="608" rx="10" fill="#dcfce7" stroke="#16a34a"/><rect x="336" y="80" width="288" height="608" rx="10" fill="#dbeafe" stroke="#2563eb"/><rect x="640" y="80" width="288" height="608" rx="10" fill="#dcfce7" stroke="#16a34a"/></g>
+<g fill="white" stroke="#16a34a" stroke-width="2"><rect x="56" y="102" width="54" height="34" rx="6"/><path d="M83 136 v12 m-17 0 h34"/><rect x="664" y="102" width="54" height="34" rx="6"/><path d="M691 136 v12 m-17 0 h34"/></g>
+<g fill="white" stroke="#2563eb" stroke-width="2"><rect x="360" y="102" width="54" height="18" rx="5"/><rect x="360" y="127" width="54" height="18" rx="5"/></g><g fill="#16a34a"><circle cx="402" cy="111" r="3"/><circle cx="402" cy="136" r="3"/></g>
+<g font-size="20" font-weight="bold"><text x="56" y="186">利用者</text><text x="360" y="186">サーバー運用者</text><text x="664" y="186">参加者</text></g>
+<g font-size="16"><text x="56" y="215">Rust開発者</text><text x="360" y="215">起動・配布・監視</text><text x="664" y="215">PCの持ち主</text></g>
+<g font-size="17"><text x="56" y="259"><tspan x="56">コードを書く（WASM）</tspan><tspan x="56" dy="36">cluster.map で依頼</tspan><tspan x="56" dy="36">結果を受け取る</tspan></text>
+<text x="360" y="259"><tspan x="360">server start で起動</tspan><tspan x="360" dy="36">チケットを配る</tspan><tspan x="360" dy="36">nodes・jobs・status・</tspan><tspan x="360" dy="26">diag を見る</tspan></text>
+<text x="664" y="259"><tspan x="664">client join で同意</tspan><tspan x="664" dy="36">使うコア数・メモリを決める</tspan><tspan x="664" dy="36">Ctrl-Cでいつでも抜ける</tspan></text></g>
+<g font-size="16" font-weight="bold"><text x="56" y="402">操作例（コマンド・Rust）</text><text x="360" y="402">コマンド例</text><text x="664" y="402">コマンド例</text></g>
+<g fill="white" stroke="#64748b" stroke-width="2"><rect x="48" y="420" width="256" height="96" rx="10"/><rect x="48" y="532" width="256" height="112" rx="10"/><rect x="352" y="420" width="256" height="62" rx="10"/><rect x="352" y="498" width="256" height="62" rx="10"/><rect x="352" y="576" width="256" height="62" rx="10"/><rect x="656" y="420" width="256" height="142" rx="10"/><rect x="656" y="578" width="256" height="62" rx="10"/></g>
+<g font-family="monospace" font-size="14"><text x="60" y="445"><tspan x="60">cargo build --release</tspan><tspan x="60" dy="24">  --target</tspan><tspan x="60" dy="24">  wasm32-unknown-unknown</tspan></text><text x="60" y="559"><tspan x="60">cluster.map(</tspan><tspan x="60" dy="24">  &amp;module, inputs</tspan><tspan x="60" dy="24">).await?;</tspan></text>
+<text x="364" y="445"><tspan x="364">opencompute-server</tspan><tspan x="364" dy="23">  start</tspan></text><text x="364" y="523"><tspan x="364">opencompute-server</tspan><tspan x="364" dy="23">  nodes</tspan></text><text x="364" y="601"><tspan x="364">opencompute-server</tspan><tspan x="364" dy="23">  diag</tspan></text>
+<text x="668" y="445"><tspan x="668">opencompute-client join</tspan><tspan x="668" dy="24">  --server &lt;TICKET&gt;</tspan><tspan x="668" dy="24">  --cores 2</tspan><tspan x="668" dy="24">  --max-memory-mb 1024</tspan></text><text x="668" y="616">Ctrl-C</text></g>
+<text x="48" y="669" font-size="14">※ 複数行の例は1つの操作です。</text>
+</svg>

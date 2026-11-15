@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 780" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" fill="#0f172a">
+<title>バッチジョブのデータの流れ</title><desc>利用者のRustコードからUnixソケットでサーバーへ依頼し、入力をタスクに分割する。空きのあるClientで実行し、ハッシュを検証した結果を入力順に並べて返す七段階の流れ。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#64748b"/></marker></defs>
+<rect width="960" height="780" rx="10" fill="white"/><text x="32" y="48" font-size="28" font-weight="bold">バッチジョブ：入力から結果まで</text>
+<g stroke-width="2"><rect x="32" y="80" width="400" height="120" rx="10" fill="#dcfce7" stroke="#16a34a"/><rect x="528" y="80" width="400" height="120" rx="10" fill="#f1f5f9" stroke="#64748b"/>
+<rect x="528" y="250" width="400" height="150" rx="10" fill="#dbeafe" stroke="#2563eb"/><rect x="32" y="250" width="400" height="150" rx="10" fill="#dbeafe" stroke="#2563eb"/>
+<rect x="32" y="450" width="400" height="120" rx="10" fill="#dcfce7" stroke="#16a34a"/><rect x="528" y="450" width="400" height="120" rx="10" fill="#fef3c7" stroke="#f59e0b"/>
+<rect x="528" y="620" width="400" height="128" rx="10" fill="#dbeafe" stroke="#2563eb"/><rect x="32" y="620" width="400" height="128" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+<g fill="none" stroke="#64748b" marker-end="url(#arrow)"><path d="M432 140 H522"/><path d="M728 200 V244"/><path d="M528 325 H438"/><path d="M232 400 V444"/><path d="M432 510 H522"/><path d="M728 570 V614"/><path d="M528 684 H438"/></g></g>
+<g font-size="18" font-weight="bold"><text x="56" y="115">1　利用者のRustコード</text><text x="552" y="115">2　control socket</text><text x="552" y="286">3　サーバーが入力を分割</text><text x="56" y="286">4　空きのあるClientへ割り当て</text><text x="56" y="486">5　Clientで実行</text><text x="552" y="486">6　結果を送信</text><text x="552" y="656">7　サーバーが入力順に並べる</text><text x="56" y="656">利用者に結果が返る</text></g>
+<g font-size="17"><text x="56" y="157">cluster.map(module, inputs)</text><text x="552" y="157">Unixソケット</text><text x="552" y="326"><tspan x="552">inputs を1件1タスクに分割して</tspan><tspan x="552" dy="28">FIFO キューへ</tspan></text><text x="56" y="326"><tspan x="56">空きスロットのあるClientが対象</tspan><tspan x="56" dy="28">最も空いているノード優先</tspan></text><text x="56" y="530">rayon プールでタスクを実行</text><text x="552" y="530">ハッシュ検証</text><text x="552" y="700">完了順から入力順へ並べ替え</text><text x="56" y="700">Vec&lt;Output&gt; で受け取る</text></g>
+</svg>

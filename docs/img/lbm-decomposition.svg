@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 740" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif">
+<title>流体を帯状に分けて、境界の1行だけ交換する</title>
+<desc>上下に壁のある流路を4領域に分け、それぞれのPCが担当する。左右は周期境界で、隣接領域は毎ステップ、ハロ行を交換する。拡大図は格子と上下のハロ行を示す。</desc>
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#2563eb"/></marker>
+<pattern id="wall" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M0 10 10 0" stroke="#64748b" stroke-width="2"/></pattern>
+<pattern id="grid" width="36" height="32" patternUnits="userSpaceOnUse"><path d="M36 0H0V32" fill="none" stroke="#94a3b8" stroke-width="2"/></pattern>
+<g id="pc" stroke="#16a34a" stroke-width="2"><rect width="62" height="39" rx="10" fill="#dcfce7"/><path d="M31 39V49M16 49H46"/></g>
+</defs>
+<rect width="960" height="740" rx="10" fill="white"/>
+<text x="32" y="48" font-size="28" font-weight="bold" fill="#0f172a">流体を帯状に分けて、境界の1行だけ交換する</text>
+<text x="42" y="88" font-size="17" fill="#64748b">上下は壁 ／ 左右は周期境界 ／ 各PCが帯状の領域を担当</text>
+<g stroke-width="2">
+<rect x="120" y="119" width="560" height="18" fill="url(#wall)" stroke="#64748b"/>
+<rect x="120" y="137" width="560" height="60" fill="#dbeafe" stroke="#2563eb"/>
+<rect x="120" y="197" width="560" height="60" fill="#dcfce7" stroke="#16a34a"/>
+<rect x="120" y="257" width="560" height="60" fill="#fef3c7" stroke="#f59e0b"/>
+<rect x="120" y="317" width="560" height="60" fill="#f1f5f9" stroke="#64748b"/>
+<rect x="120" y="377" width="560" height="18" fill="url(#wall)" stroke="#64748b"/>
+<path d="M120 193H680M120 201H680M120 253H680M120 261H680M120 313H680M120 321H680" stroke="#f59e0b"/>
+<g stroke="#2563eb" fill="none" marker-end="url(#a)"><path d="M330 165H460"/><path d="M330 225H460"/><path d="M330 285H460"/><path d="M330 345H460"/><path d="M505 182V212"/><path d="M540 212V182"/><path d="M505 242V272"/><path d="M540 272V242"/><path d="M505 302V332"/><path d="M540 332V302"/>
+<path d="M120 166H65V102H680" stroke-dasharray="5 4"/><path d="M680 347H710V413H120" stroke-dasharray="5 4"/>
+</g>
+<g stroke="#16a34a"><path d="M680 166H756M680 226H756M680 286H756M680 346H756"/></g>
+</g>
+<g font-size="18" fill="#0f172a"><text x="145" y="173">領域0</text><text x="145" y="233">領域1</text><text x="145" y="293">領域2</text><text x="145" y="353">領域3</text></g>
+<g font-size="16" fill="#0f172a"><use href="#pc" x="765" y="143"/><text x="842" y="170">PC1</text><use href="#pc" x="765" y="203"/><text x="842" y="230">PC2</text><use href="#pc" x="765" y="263"/><text x="842" y="290">PC3</text><use href="#pc" x="765" y="323"/><text x="842" y="350">PC4</text></g>
+<text x="43" y="441" font-size="16" fill="#2563eb">左右をつなぐ周期境界</text>
+<rect x="32" y="464" width="896" height="170" rx="10" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+<text x="53" y="493" font-size="18" font-weight="bold" fill="#0f172a">領域1の拡大</text>
+<rect x="242" y="484" width="396" height="128" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<path d="M242 500H638M242 596H638" stroke="#f59e0b" stroke-width="32"/>
+<rect x="242" y="484" width="396" height="128" fill="url(#grid)"/>
+<g fill="#0f172a" font-size="16"><text x="659" y="501">上隣から受け取る</text><text x="659" y="523">ハロ(ゴースト)行</text><text x="659" y="582">下隣から受け取る</text><text x="659" y="604">ハロ(ゴースト)行</text><text x="53" y="550"><tspan x="53">計算する格子</tspan><tspan x="53" dy="25">＋ 上下の境界行</tspan></text><text x="341" y="555">自分が担当する格子</text></g>
+<rect x="32" y="656" width="896" height="58" rx="10" fill="#dbeafe"/>
+<text x="49" y="692" font-size="18" fill="#0f172a">1ステップごとに: 衝突 → 境界行を送る → 隣の境界行を受け取る → 並進</text>
+</svg>

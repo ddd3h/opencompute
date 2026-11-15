@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 680" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" font-size="17" fill="#0f172a">
+<title>OpenCompute のしくみ</title>
+<desc>サーバーが小さな計算を4台のPCに配り、結果を集めます。チケットで身元と合言葉を共有し、利用者の同意後に暗号化・相互認証で接続します。</desc>
+<defs><marker id="blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M1 1 9 5 1 9" fill="none" stroke="#2563eb" stroke-width="2"/></marker><marker id="green" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M1 1 9 5 1 9" fill="none" stroke="#16a34a" stroke-width="2"/></marker><g id="pc" stroke="#16a34a" stroke-width="2"><rect width="100" height="65" rx="10" fill="#dcfce7"/><path d="M50 65v15m-25 0h50"/><circle cx="37" cy="29" r="3" fill="#16a34a"/><circle cx="63" cy="29" r="3" fill="#16a34a"/><path d="M39 43q11 10 22 0" fill="none"/></g></defs>
+<rect width="960" height="680" rx="10" fill="white"/>
+<text x="32" y="49" font-size="28" font-weight="bold">OpenCompute のしくみ</text>
+<rect x="32" y="106" width="275" height="340" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+<g stroke="#2563eb" stroke-width="2" fill="white"><rect x="96" y="143" width="146" height="48" rx="10"/><rect x="96" y="201" width="146" height="48" rx="10"/><rect x="96" y="259" width="146" height="48" rx="10"/></g>
+<g fill="#16a34a"><circle cx="117" cy="167" r="5"/><circle cx="117" cy="225" r="5"/><circle cx="117" cy="283" r="5"/></g><path d="M141 167h76m-76 58h76m-76 58h76" stroke="#2563eb" stroke-width="2"/>
+<text x="169" y="347" text-anchor="middle" font-weight="bold">サーバー:</text><text x="169" y="378" text-anchor="middle"><tspan x="169">仕事を分けて配る・</tspan><tspan x="169" dy="28">結果を集める</tspan></text>
+<g fill="none" stroke-width="2"><path d="M307 188H604V145H651" stroke="#2563eb" marker-end="url(#blue)"/><path d="M604 188v94h47" stroke="#2563eb" marker-end="url(#blue)"/><path d="M604 282v137h47" stroke="#2563eb" marker-end="url(#blue)"/><path d="M604 419v137h47" stroke="#2563eb" marker-end="url(#blue)"/><path d="M651 177H626V315H321" stroke="#16a34a" marker-end="url(#green)"/><path d="M651 314h-25m25 137h-25V315m25 273h-25V451" stroke="#16a34a"/></g>
+<rect x="331" y="146" width="254" height="31" rx="10" fill="white"/><text x="342" y="168" fill="#2563eb">タスク(小さな計算)</text><rect x="395" y="282" width="74" height="30" rx="10" fill="white"/><text x="409" y="304" fill="#16a34a">結果</text>
+<use href="#pc" x="667" y="115"/><use href="#pc" x="667" y="252"/><use href="#pc" x="667" y="389"/><use href="#pc" x="667" y="526"/>
+<text x="786" y="154">あなたのPC</text><text x="786" y="291">友だちのPC</text><text x="786" y="428">研究室のPC</text><text x="786" y="565">...</text>
+<rect x="332" y="352" width="252" height="72" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/><g stroke="#64748b" stroke-width="2" fill="none"><path d="M353 382v-9a10 10 0 0 1 20 0v9"/><rect x="348" y="382" width="30" height="25" rx="6"/></g><text x="391" y="394">暗号化・相互認証</text>
+<path d="M170 446v49h187" fill="none" stroke="#f59e0b" stroke-width="2"/><path d="M572 495h32v-282h47" fill="none" stroke="#f59e0b" stroke-width="2" marker-end="url(#blue)"/>
+<path d="M332 458h254v23q-15 10 0 20v29H332v-29q15-10 0-20Z" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/><text x="459" y="484" text-anchor="middle">チケット</text><text x="459" y="510" text-anchor="middle" font-size="14">(サーバーの身元 + 参加の合言葉)</text>
+<path d="M786 185h139v51H804l-18 12v-12h0Z" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/><text x="855" y="216" text-anchor="middle" font-size="16">参加します[Y]</text>
+<rect x="32" y="609" width="552" height="43" rx="10" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/><text x="308" y="637" text-anchor="middle">PCが増えるほど使えるCPUが増える</text>
+</svg>

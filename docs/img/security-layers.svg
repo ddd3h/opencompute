@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 740" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" fill="#0f172a">
+<title>安全のための何重もの壁</title><desc>人の同意、認証、暗号化通信、入力の検証、WASMサンドボックス、資源の上限の六層で保護する。CPU使用率の厳密な制限と悪意ある計算結果の検出は未対応。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#64748b"/></marker></defs>
+<rect width="960" height="740" rx="10" fill="white"/><text x="32" y="48" font-size="28" font-weight="bold">安全のための何重もの壁</text>
+<path d="M848 82 880 94 V123 Q880 147 848 161 Q816 147 816 123 V94Z" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/><path d="m831 119 12 12 22-25" fill="none" stroke="#2563eb" stroke-width="2"/>
+<g stroke-width="2">
+<rect x="32" y="82" width="744" height="68" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+<rect x="48" y="166" width="744" height="68" rx="10" fill="#dbeafe" stroke="#2563eb"/>
+<rect x="64" y="250" width="744" height="68" rx="10" fill="#dbeafe" stroke="#2563eb"/>
+<rect x="80" y="334" width="744" height="68" rx="10" fill="#fef3c7" stroke="#f59e0b"/>
+<rect x="96" y="418" width="744" height="68" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+<rect x="112" y="502" width="744" height="68" rx="10" fill="#f1f5f9" stroke="#64748b"/>
+<g stroke="#64748b" marker-end="url(#arrow)"><path d="M384 151 v13"/><path d="M400 235 v13"/><path d="M416 319 v13"/><path d="M432 403 v13"/><path d="M448 487 v13"/></g>
+</g>
+<g font-size="18"><text x="52" y="110" font-weight="bold">1　人の同意</text><text x="89" y="136" font-size="16">参加は明示操作・いつでも Ctrl-C</text>
+<text x="68" y="194" font-weight="bold">2　認証</text><text x="105" y="220" font-size="16">公開鍵の確認 + 参加トークン</text>
+<text x="84" y="278" font-weight="bold">3　暗号化通信</text><text x="121" y="304" font-size="16">QUIC/TLS</text>
+<text x="100" y="362" font-weight="bold">4　入力の検証</text><text x="137" y="388" font-size="16">サイズ上限・ハッシュ・タイムアウト</text>
+<text x="116" y="446" font-weight="bold">5　WASMサンドボックス</text><text x="153" y="472" font-size="16">ファイル/ネット/OSコマンドなし</text>
+<text x="132" y="530" font-weight="bold">6　資源の上限</text><text x="169" y="556" font-size="16">コア数・メモリ・燃料・時間</text></g>
+<rect x="32" y="606" width="896" height="102" rx="10" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+<text x="56" y="638" font-size="18" font-weight="bold" fill="#dc2626">まだできないこと:</text><text x="56" y="674" font-size="18">CPU使用率(%)の厳密な制限、悪意ある計算結果の検出</text>
+</svg>

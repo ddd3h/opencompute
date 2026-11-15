@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/scheduler",
+    "crates/network",
+    "crates/runtime",
+    "crates/client",
+    "crates/server",
+    "crates/compute-api",
+    "crates/guest",
+    "crates/lbm",
+]
+# WASM guest examples are built for wasm32-unknown-unknown in their own workspace.
+exclude = ["examples/wasm-modules"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal", "fs"] }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1.1", features = ["use-std"] }
+blake3 = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+rayon = "1.10"
+iroh = "1.4.1"
+wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "std"] }
+rand = "0.9"
+
+opencompute-protocol = { path = "crates/protocol" }
+opencompute-scheduler = { path = "crates/scheduler" }
+opencompute-network = { path = "crates/network" }
+opencompute-runtime = { path = "crates/runtime" }
+opencompute-client = { path = "crates/client" }
+opencompute-server = { path = "crates/server" }
+
+[profile.release]
+lto = "thin"

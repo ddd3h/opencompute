@@ -1,0 +1,13 @@
+[package]
+name = "opencompute-protocol"
+description = "Wire protocol, IDs and framing shared by OpenCompute server and client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }

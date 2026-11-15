@@ -1,0 +1,26 @@
+[package]
+name = "opencompute-client"
+description = "OpenCompute worker node: joins a server and executes tasks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "opencompute_client"
+
+[[bin]]
+name = "opencompute-client"
+path = "src/main.rs"
+
+[dependencies]
+opencompute-protocol.workspace = true
+opencompute-network.workspace = true
+opencompute-runtime.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+rayon.workspace = true
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }

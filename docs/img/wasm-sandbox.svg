@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 820" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif">
+<title>Wasmの転送・検証と隔離実行</title><desc>サーバーがハッシュ名で保存したWasmを1MiB単位で転送。クライアントはBLAKE3で検証し、Wasmtimeでコンパイルしてディスクにもキャッシュする。ゲストはメモリ、燃料、実時間を制限して実行し、ファイル、ネットワーク、OSコマンド、WASIやホスト関数にはアクセスできない。入力からoc_allocとoc_runを通して出力を得る。</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="context-stroke"/></marker><g id="cross" stroke="#dc2626" stroke-width="3"><path d="M0 0L43 43M43 0L0 43"/></g></defs>
+<rect width="960" height="820" rx="20" fill="white"/><text x="32" y="48" font-size="28" font-weight="bold" fill="#0f172a">Wasmを検証して、サンドボックスで実行</text>
+<g stroke-width="2"><rect x="32" y="86" width="226" height="139" rx="10" fill="#dbeafe" stroke="#2563eb"/><rect x="493" y="86" width="435" height="139" rx="10" fill="#dcfce7" stroke="#16a34a"/></g>
+<!-- サーバー -->
+<g stroke="#2563eb" stroke-width="2" fill="white"><rect x="49" y="104" width="43" height="16" rx="5"/><rect x="49" y="126" width="43" height="16" rx="5"/><circle cx="57" cy="112" r="2" fill="#2563eb"/><circle cx="57" cy="134" r="2" fill="#2563eb"/></g>
+<g fill="#0f172a" font-size="18"><text x="104" y="129" font-weight="bold">サーバー</text><text x="51" y="172">.wasm を保存<tspan x="51" dy="28">(ハッシュ名)</tspan></text><text x="516" y="122" font-weight="bold">クライアント</text><text x="516" y="162">BLAKE3でハッシュ検証</text><text x="516" y="194" font-size="16">一致したコードを次の工程へ</text></g>
+<g stroke="#2563eb" stroke-width="2" fill="#dbeafe"><rect x="302" y="123" width="32" height="39" rx="6"/><rect x="344" y="123" width="32" height="39" rx="6"/><rect x="386" y="123" width="32" height="39" rx="6"/></g><path d="M267 180H482" stroke="#2563eb" stroke-width="2" marker-end="url(#a)"/><text x="287" y="108" font-size="16" fill="#1e40af">1MiBずつ転送</text>
+<path d="M711 226V253" stroke="#16a34a" stroke-width="2" marker-end="url(#a)"/>
+<rect x="347" y="262" width="581" height="94" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+<!-- ディスク -->
+<g fill="white" stroke="#64748b" stroke-width="2"><path d="M369 288V326C369 338 419 338 419 326V288"/><ellipse cx="394" cy="288" rx="25" ry="9"/><path d="M369 309C369 321 419 321 419 309"/></g>
+<text x="440" y="299" font-size="18" fill="#334155">Wasmtime でコンパイル → キャッシュ<tspan x="440" dy="29" font-size="17">ディスクにも保存</tspan></text>
+<path d="M638 357V401" stroke="#16a34a" stroke-width="2" marker-end="url(#a)"/>
+<!-- サンドボックス -->
+<rect x="252" y="411" width="456" height="270" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+<path d="M276 435L290 430 304 435V447Q302 460 290 465Q278 460 276 447Z" fill="white" stroke="#16a34a" stroke-width="2"/>
+<text x="318" y="454" font-size="20" font-weight="bold" fill="#166534">サンドボックス</text>
+<rect x="278" y="477" width="404" height="72" rx="10" fill="white" stroke="#16a34a" stroke-width="2"/><text x="480" y="507" text-anchor="middle" font-size="19" fill="#166534">ゲスト<tspan x="480" dy="25" font-size="17">(あなたのRustコード)</tspan></text>
+<g fill="#fef3c7" stroke="#f59e0b" stroke-width="2"><rect x="278" y="567" width="154" height="40" rx="10"/><rect x="444" y="567" width="238" height="40" rx="10"/><rect x="340" y="620" width="280" height="40" rx="10"/></g><g fill="#78350f" font-size="16" text-anchor="middle"><text x="355" y="593">メモリ上限</text><text x="563" y="593">燃料(命令数)上限</text><text x="480" y="646">実時間タイムアウト</text></g>
+<!-- 禁止された機能：基本図形 -->
+<g stroke="#dc2626" stroke-width="2" fill="#fee2e2"><path d="M93 445H119L135 461V491H93Z"/><path d="M119 445V461H135"/><circle cx="825" cy="465" r="24"/><ellipse cx="825" cy="465" rx="11" ry="24"/><path d="M801 465H849"/><rect x="93" y="577" width="48" height="38" rx="6"/><path d="M101 587L109 595 101 603M115 603H130"/><rect x="805" y="584" width="42" height="31" rx="6"/><path d="M814 584V576A12 12 0 0 1 838 576V584"/></g>
+<use href="#cross" x="92" y="445"/><use href="#cross" x="803" y="444"/><use href="#cross" x="95" y="575"/><use href="#cross" x="804" y="573"/>
+<g fill="#dc2626" font-size="17" text-anchor="middle"><text x="115" y="522">ファイル ✕</text><text x="825" y="522">ネットワーク ✕</text><text x="115" y="646">OSコマンド ✕</text><text x="825" y="645" font-size="16">WASI/ホスト関数なし<tspan x="825" dy="25">(import 0個)</tspan></text></g>
+<rect x="32" y="715" width="896" height="73" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/><text x="54" y="759" font-size="18" font-weight="bold" fill="#1e40af">ABI</text><text x="150" y="759" font-size="19" fill="#1e40af">入力</text><path d="M211 752H307" stroke="#2563eb" stroke-width="2" marker-end="url(#a)"/><path d="M649 752H746" stroke="#2563eb" stroke-width="2" marker-end="url(#a)"/><text x="341" y="759" font-size="19" fill="#1e40af">oc_alloc / oc_run</text><text x="783" y="759" font-size="19" fill="#1e40af">出力</text>
+</svg>
