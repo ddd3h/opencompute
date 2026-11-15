@@ -314,6 +314,7 @@ impl Cluster {
             checkpoint_every,
             direct: o.direct,
             parts_per_node: o.parts_per_node,
+            halo_depth: o.halo_depth,
         });
         match self.request(req).await? {
             ControlResponse::StatefulSubmitted(j) => Ok(j),
@@ -371,6 +372,7 @@ impl Cluster {
         let o = StatefulOptions {
             direct: cfg.direct,
             parts_per_node: cfg.parts_per_node,
+            halo_depth: cfg.halo_depth,
         };
         let job = self
             .submit_stateful_with(lbm::KERNEL_NAME, blobs, cfg.steps, cfg.checkpoint_every, &o)
@@ -402,6 +404,8 @@ pub struct StatefulOptions {
     /// If greater than 0: keep `parts_per_node × workers` parts, re-partitioning from the last checkpoint when
     /// workers join or leave.
     pub parts_per_node: u32,
+    /// Direct mode: halo depth (rows exchanged once every that many steps). 0 = automatic.
+    pub halo_depth: u32,
 }
 
 /// Result of a stateful job.
@@ -436,4 +440,6 @@ pub struct LbmRun {
     pub direct: bool,
     /// If greater than 0: re-partition to `parts_per_node × workers` parts on membership changes.
     pub parts_per_node: u32,
+    /// Direct mode: halo depth, exchanged once every that many steps (0 = automatic).
+    pub halo_depth: u32,
 }

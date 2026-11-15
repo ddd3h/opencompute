@@ -72,13 +72,19 @@ pub struct PeerNet {
     pub(crate) mailbox: Arc<Mailbox>,
     links: Mutex<HashMap<NodeId, mpsc::Sender<PeerMessage>>>,
     addr_override: Option<Vec<u8>>,
+    /// Emulated one-way latency added to halos sent to other clients.
+    latency: std::time::Duration,
 }
 
 use opencompute_network::iroh as iroh_endpoint;
 
 impl PeerNet {
     /// Start accepting peer connections on `ep` (which must have been bound with `PEER_ALPN`).
-    pub fn start(ep: iroh_endpoint::Endpoint, addr_override: Option<Vec<u8>>) -> Arc<Self> {
+    pub fn start(
+        ep: iroh_endpoint::Endpoint,
+        addr_override: Option<Vec<u8>>,
+        latency: std::time::Duration,
+    ) -> Arc<Self> {
         let me = opencompute_network::node_id(ep.id());
         let net = Arc::new(Self {
             ep: ep.clone(),
@@ -86,6 +92,7 @@ impl PeerNet {
             mailbox: Arc::new(Mailbox::default()),
             links: Mutex::new(HashMap::new()),
             addr_override,
+            latency,
         });
         let mailbox = net.mailbox.clone();
         tokio::spawn(async move {
@@ -137,6 +144,18 @@ impl PeerNet {
             self.mailbox.put(self.me, m);
             return;
         }
+        if !self.latency.is_zero() {
+            let (net, dst, delay) = (self.clone(), dst.clone(), self.latency);
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                net.send_now(&dst, m);
+            });
+            return;
+        }
+        self.send_now(dst, m);
+    }
+
+    fn send_now(self: &Arc<Self>, dst: &PeerInfo, m: PeerMessage) {
         let existing = self
             .links
             .lock()

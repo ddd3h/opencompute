@@ -127,6 +127,12 @@ pub struct PartProgress {
     pub step: u64,
     /// Full state if this step is a checkpoint or the final step.
     pub snapshot: Option<Vec<u8>>,
+    /// Steps covered by the timings below (since the previous report).
+    pub steps_done: u32,
+    /// Microseconds spent computing those steps.
+    pub compute_us: u64,
+    /// Microseconds spent waiting for neighbours' halos during those steps.
+    pub wait_us: u64,
 }
 
 /// Server accepts a join.
@@ -264,6 +270,10 @@ pub struct PartInit {
     pub checkpoint_every: u64,
     /// Step the initial/restored state is at (echoed in the first [`PartBoundary`]).
     pub step: u64,
+    /// Direct mode: halo depth of each edge (`peers.len() - 1` entries; edge `e` joins parts `e`
+    /// and `e + 1`). The halo of edge `e` is `edge_depths[e]` rows deep and exchanged at the
+    /// steps where `(step - init.step) % edge_depths[e] == 0`. Empty means depth 1 everywhere.
+    pub edge_depths: Vec<u32>,
 }
 
 /// Advance one part by one step using its neighbours' boundary data of the previous step.

@@ -243,6 +243,7 @@ fn postcard_roundtrip_server_messages() {
                 params: vec![1, 2, 3],
                 restore: Some(vec![9; 16]),
                 step: 50,
+                edge_depths: vec![4, 1],
             }),
         ),
         (
@@ -306,6 +307,7 @@ fn postcard_roundtrip_control_requests() {
             ControlRequest::SubmitStateful(SubmitStateful {
                 direct: false,
                 parts_per_node: 0,
+                halo_depth: 4,
                 kernel: "lb多的".into(),
                 params: vec![vec![1, 2], vec![3, 4, 5]],
                 steps: 1_000,
@@ -376,6 +378,8 @@ fn postcard_roundtrip_control_responses() {
                 info: StatefulInfo {
                     direct: false,
                     repartitions: 0,
+                    halo_depth: 4,
+                    retunes: 1,
                     job_id: job,
                     parts: 2,
                     step: 40,

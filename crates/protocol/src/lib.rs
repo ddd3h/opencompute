@@ -14,10 +14,10 @@ pub use ids::{JobId, ModuleHash, NodeId, TaskId, digest};
 pub use message::*;
 
 /// Protocol version. Bumped on any incompatible wire change.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// ALPN identifier negotiated during the QUIC handshake.
-pub const ALPN: &[u8] = b"opencompute/3";
+pub const ALPN: &[u8] = b"opencompute/4";
 
 /// Maximum size of a single framed message (header excluded).
 pub const MAX_FRAME_LEN: usize = 4 * 1024 * 1024;

@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-const MAGIC: u32 = 0x4f43_5302;
+const MAGIC: u32 = 0x4f43_5303;
 
 #[derive(Serialize, Deserialize)]
 struct Persisted {

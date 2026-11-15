@@ -57,6 +57,9 @@ pub struct SubmitStateful {
     /// If > 0, keep `parts_per_node × connected nodes` parts: the job is re-partitioned from its last
     /// checkpoint when nodes join or leave. 0 = fixed number of parts.
     pub parts_per_node: u32,
+    /// Direct mode: halo depth `k` (rows exchanged once every `k` steps). 0 = choose
+    /// automatically from measured latency; 1 = exchange every step.
+    pub halo_depth: u32,
 }
 
 /// Progress of a stateful job.
@@ -82,6 +85,10 @@ pub struct StatefulInfo {
     pub direct: bool,
     /// How often the job was re-split into a different number of parts.
     pub repartitions: u32,
+    /// Halo depth currently in use (largest over the edges).
+    pub halo_depth: u32,
+    /// How often the automatic tuner changed the halo depth.
+    pub retunes: u32,
 }
 
 /// Server counters.

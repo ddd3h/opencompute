@@ -62,6 +62,49 @@ pub(crate) struct SJob {
     pub started: Instant,
     /// Consecutive direct-mode stalls without a new checkpoint.
     pub direct_failures: u32,
+    /// Requested halo depth (0 = choose automatically).
+    pub halo_req: u32,
+    /// Halo depth in use (uniform request; each edge is clamped to what its strips allow).
+    pub halo_depth: u32,
+    /// Depth actually used on each edge in the current run.
+    pub edge_depths: Vec<u32>,
+    /// Per part since the last (re)start: (steps, compute µs, wait µs).
+    pub stats: Vec<(u64, u64, u64)>,
+    /// Times the automatic tuner changed the depth.
+    pub retunes: u32,
+    /// The tuner wants to restart from the latest checkpoint with a new depth.
+    pub retune_pending: bool,
+}
+
+/// Largest depth the automatic tuner picks. Deeper blocks make a single slow or jittery part
+/// hold everyone back, so measurements favour a modest cap.
+const AUTO_DEPTH_MAX: u32 = 8;
+/// Parts must have run this many steps since the last restart before timings are trusted.
+const TUNE_MIN_STEPS: u64 = 40;
+/// Only retune when the model predicts at least this much speed-up.
+const TUNE_MIN_GAIN: f64 = 1.15;
+
+/// Pick a halo depth from measurements. Model: a step costs `c1 * (1 + (k-1)/h)` of compute
+/// (redundant ghost rows) plus `L / k` of latency per exchange, which gives
+/// `k* = sqrt(L * h / c1)`. `wait_ps` is the smallest per-step wait over parts (pure latency,
+/// without waiting for a slower neighbour), `compute_ps` the mean compute time per step, both
+/// measured at depth `k_cur`; `h` is a typical strip height. Returns `None` to keep `k_cur`.
+pub(crate) fn recommend_depth(
+    k_cur: u32,
+    wait_ps: f64,
+    compute_ps: f64,
+    h: f64,
+    k_max: u32,
+) -> Option<u32> {
+    let k_cur_f = f64::from(k_cur.max(1));
+    let c1 = compute_ps / (1.0 + (k_cur_f - 1.0) / h.max(1.0));
+    if c1 <= 0.0 || wait_ps < 0.0 || !h.is_finite() {
+        return None;
+    }
+    let latency = wait_ps * k_cur_f;
+    let k_best = ((latency * h / c1).sqrt().round() as u32).clamp(1, k_max.max(1));
+    let cost = |k: f64| c1 * (1.0 + (k - 1.0) / h) + latency / k;
+    (k_best != k_cur && cost(k_cur_f) / cost(f64::from(k_best)) >= TUNE_MIN_GAIN).then_some(k_best)
 }
 
 /// Persisted form.
@@ -79,6 +122,9 @@ pub(crate) struct SJobSnapshot {
     pub direct: bool,
     pub parts_per_node: u32,
     pub repartitions: u32,
+    pub halo_req: u32,
+    pub halo_depth: u32,
+    pub retunes: u32,
 }
 
 impl SJob {
@@ -110,6 +156,39 @@ impl SJob {
             placement: self.placement.clone(),
             direct: self.direct,
             repartitions: self.repartitions,
+            halo_depth: self.edge_depths.iter().copied().max().unwrap_or(1),
+            retunes: self.retunes,
+        }
+    }
+
+    /// After a checkpoint: decide whether the measured latency justifies another depth.
+    fn consider_retune(&mut self) {
+        if self.halo_req != 0 || !self.direct || self.parts() < 2 {
+            return;
+        }
+        if self.stats.iter().any(|s| s.0 < TUNE_MIN_STEPS) {
+            return;
+        }
+        let n = self.stats.len() as f64;
+        let compute_ps = self
+            .stats
+            .iter()
+            .map(|s| s.1 as f64 / s.0 as f64)
+            .sum::<f64>()
+            / n;
+        let wait_ps = self
+            .stats
+            .iter()
+            .map(|s| s.2 as f64 / s.0 as f64)
+            .fold(f64::INFINITY, f64::min);
+        let limits = opencompute_runtime::stateful::edge_limits(&self.kernel, &self.params);
+        let h = limits.iter().map(|l| f64::from(*l)).sum::<f64>() / limits.len().max(1) as f64;
+        let k_cur = self.edge_depths.iter().copied().max().unwrap_or(1);
+        if let Some(k) = recommend_depth(k_cur, wait_ps, compute_ps, h, AUTO_DEPTH_MAX) {
+            info!(job = %self.id, from = k_cur, to = k, wait_us = wait_ps, compute_us = compute_ps, "halo depth retune");
+            self.halo_depth = k;
+            self.retunes += 1;
+            self.retune_pending = true;
         }
     }
     pub fn snapshot(&self) -> SJobSnapshot {
@@ -132,6 +211,9 @@ impl SJob {
             direct: self.direct,
             parts_per_node: self.parts_per_node,
             repartitions: self.repartitions,
+            halo_req: self.halo_req,
+            halo_depth: self.halo_depth,
+            retunes: self.retunes,
         }
     }
     pub fn from_snapshot(s: SJobSnapshot) -> Self {
@@ -163,6 +245,12 @@ impl SJob {
             last_progress: Instant::now(),
             started: Instant::now(),
             direct_failures: 0,
+            halo_req: s.halo_req,
+            halo_depth: s.halo_depth.max(1),
+            edge_depths: vec![],
+            stats: vec![],
+            retunes: s.retunes,
+            retune_pending: false,
         }
     }
 }
@@ -205,6 +293,12 @@ impl Inner {
                 last_progress: Instant::now(),
                 started: Instant::now(),
                 direct_failures: 0,
+                halo_req: s.halo_depth,
+                halo_depth: s.halo_depth.max(1),
+                edge_depths: vec![],
+                stats: vec![],
+                retunes: 0,
+                retune_pending: false,
             },
         );
         self.srev += 1;
@@ -285,6 +379,13 @@ impl Inner {
         job.pending.clear();
         job.last_progress = Instant::now();
         job.started = Instant::now();
+        job.retune_pending = false;
+        job.stats = vec![(0, 0, 0); n];
+        let k = if job.direct { job.halo_depth.max(1) } else { 1 };
+        job.edge_depths = opencompute_runtime::stateful::edge_limits(&job.kernel, &job.params)
+            .into_iter()
+            .map(|limit| k.min(limit).max(1))
+            .collect();
         job.placement = (0..n).map(|i| Some(nodes[i % nodes.len()])).collect();
         let peers: Vec<PeerInfo> = job
             .placement
@@ -313,6 +414,11 @@ impl Inner {
                         peers: if job.direct { peers.clone() } else { vec![] },
                         steps: job.steps,
                         checkpoint_every: job.ck_every,
+                        edge_depths: if job.direct {
+                            job.edge_depths.clone()
+                        } else {
+                            vec![]
+                        },
                     }),
                 )
             })
@@ -360,6 +466,8 @@ impl Inner {
                             j.direct = false;
                         }
                         self.s_start(id);
+                    } else if j.retune_pending {
+                        self.s_start(id);
                     } else if j.parts_per_node > 0 && j.started.elapsed() > Duration::from_secs(2) {
                         let target = self.s_eligible(j.direct).len() * j.parts_per_node as usize;
                         if target > 0 && target != j.last_target {
@@ -391,6 +499,11 @@ impl Inner {
         }
         let before = job.progress.iter().copied().min().unwrap_or(0);
         job.progress[i] = p.step;
+        if let Some(st) = job.stats.get_mut(i) {
+            st.0 += u64::from(p.steps_done);
+            st.1 += p.compute_us;
+            st.2 += p.wait_us;
+        }
         if job.progress.iter().copied().min().unwrap_or(0) > before {
             job.last_progress = Instant::now();
         }
@@ -410,6 +523,9 @@ impl Inner {
                 if p.step > job.checkpoint.as_ref().map_or(0, |c| c.0) {
                     job.checkpoint = Some((p.step, snaps));
                     job.direct_failures = 0;
+                    if p.step < job.steps {
+                        job.consider_retune();
+                    }
                     self.srev += 1;
                 }
                 if p.step >= job.steps {
@@ -565,4 +681,41 @@ fn blake3_hash(lo: &[u8], hi: &[u8]) -> [u8; 32] {
     v.extend_from_slice(lo);
     v.extend_from_slice(hi);
     digest(&v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recommend_depth;
+
+    #[test]
+    fn lan_keeps_depth_one() {
+        // 0.1 ms wait, 2.6 ms compute, 128-row strips: nothing to gain.
+        assert_eq!(recommend_depth(1, 100.0, 2600.0, 128.0, 8), None);
+    }
+
+    #[test]
+    fn high_latency_deepens_the_halo() {
+        // 10 ms wait per step at depth 1: sqrt(10000 * 128 / 2600) = 22, capped at 8.
+        assert_eq!(recommend_depth(1, 10_000.0, 2600.0, 128.0, 8), Some(8));
+        // Moderate latency picks an intermediate depth.
+        let k = recommend_depth(1, 1500.0, 2600.0, 128.0, 16).unwrap();
+        assert!((2..=16).contains(&k), "{k}");
+    }
+
+    #[test]
+    fn measurements_at_depth_k_are_normalised() {
+        // At depth 8 the same link shows 1/8 of the wait per step and slightly more compute.
+        let c8 = 2600.0 * (1.0 + 7.0 / 128.0);
+        assert_eq!(recommend_depth(8, 10_000.0 / 8.0, c8, 128.0, 8), None);
+        // From depth 8 the tuner goes back down once latency disappears and the redundant
+        // ghost-row compute (large for short strips) dominates.
+        let c8_short = 2600.0 * (1.0 + 7.0 / 16.0);
+        assert_eq!(recommend_depth(8, 5.0, c8_short, 16.0, 8), Some(1));
+    }
+
+    #[test]
+    fn degenerate_inputs_are_ignored() {
+        assert_eq!(recommend_depth(1, 100.0, 0.0, 128.0, 8), None);
+        assert_eq!(recommend_depth(1, 100.0, 100.0, f64::NAN, 8), None);
+    }
 }

@@ -47,6 +47,10 @@ enum Cmd {
         /// Skip the interactive consent prompt (only for scripts/tests; you still consent by running this).
         #[arg(long)]
         yes: bool,
+        /// Testing aid: delay halos sent to other clients by this many milliseconds, to emulate a
+        /// high-latency network.
+        #[arg(long, default_value_t = 0)]
+        emulate_halo_latency_ms: u64,
     },
     /// Show this machine's node id and detected resources.
     Info {
@@ -91,6 +95,7 @@ async fn main() -> Result<()> {
             data_dir,
             relay,
             yes,
+            emulate_halo_latency_ms,
         } => {
             let ticket = Ticket::decode(&server).context("invalid --server ticket")?;
             let dir = data_dir.unwrap_or_else(default_dir);
@@ -108,6 +113,7 @@ async fn main() -> Result<()> {
             }
             cfg.cache_dir = Some(dir.clone());
             cfg.network.relay = relay;
+            cfg.emulated_halo_latency = std::time::Duration::from_millis(emulate_halo_latency_ms);
             let caps = cfg.capabilities();
 
             eprintln!("OpenCompute – join request");

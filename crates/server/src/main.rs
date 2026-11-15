@@ -94,6 +94,10 @@ enum DemoJob {
         /// Re-partition to N × (number of clients) parts when clients join or leave (0 = fixed).
         #[arg(long, default_value_t = 0)]
         parts_per_node: u32,
+        /// Direct mode: exchange a halo of this many rows once every that many steps, which
+        /// hides network latency (0 = choose automatically from measured waiting time).
+        #[arg(long, default_value_t = 0)]
+        halo_depth: u32,
     },
     /// Tasks that sleep `ms` and square their index (for failure-recovery demos).
     SleepSquare {
@@ -257,6 +261,7 @@ async fn main() -> Result<()> {
                     checkpoint_every,
                     direct,
                     parts_per_node,
+                    halo_depth,
                 } => {
                     let t0 = std::time::Instant::now();
                     let run = opencompute::LbmRun {
@@ -269,17 +274,20 @@ async fn main() -> Result<()> {
                         checkpoint_every,
                         direct,
                         parts_per_node,
+                        halo_depth,
                     };
                     let (u, info) = c.run_lbm(&run, Duration::from_secs(3600)).await?;
                     let nu = (tau - 0.5) / 3.0;
                     let umax = force / (2.0 * nu) * (ny as f64) * (ny as f64) / 4.0;
                     println!(
-                        "lbm {nx}x{ny}, {} parts, {steps} steps in {:.2?}, rollbacks={} repartitions={} direct={}",
+                        "lbm {nx}x{ny}, {} parts, {steps} steps in {:.2?}, rollbacks={} repartitions={} direct={} halo_depth={} retunes={}",
                         info.parts,
                         t0.elapsed(),
                         info.rollbacks,
                         info.repartitions,
-                        info.direct
+                        info.direct,
+                        info.halo_depth,
+                        info.retunes
                     );
                     println!(
                         "centre velocity {:.6e} (analytic Poiseuille {:.6e})",

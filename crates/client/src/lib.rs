@@ -49,6 +49,9 @@ pub struct ClientConfig {
     /// Advertise this serialised address to peers instead of the real one (testing the relay
     /// fallback, or announcing a port-forwarded address).
     pub peer_addr_override: Option<Vec<u8>>,
+    /// Delay every halo sent to another client by this long. Emulates a high-latency link for
+    /// tests and benchmarks; zero (the default) sends immediately.
+    pub emulated_halo_latency: Duration,
 }
 
 impl ClientConfig {
@@ -64,6 +67,7 @@ impl ClientConfig {
             cache_dir: None,
             network: NetworkConfig::default(),
             peer_addr_override: None,
+            emulated_halo_latency: Duration::ZERO,
         }
     }
 
@@ -551,7 +555,11 @@ pub async fn run_client(
         .await
         .map_err(|e| ClientError::Setup(e.to_string()))?;
     opencompute_network::wait_online(&ep, &cfg.network, Duration::from_secs(10)).await;
-    let peers = PeerNet::start(ep.clone(), cfg.peer_addr_override.clone());
+    let peers = PeerNet::start(
+        ep.clone(),
+        cfg.peer_addr_override.clone(),
+        cfg.emulated_halo_latency,
+    );
     let worker =
         Worker::with_peers(&cfg, Some(peers)).map_err(|e| ClientError::Setup(e.to_string()))?;
     let mut backoff = Duration::from_secs(1);

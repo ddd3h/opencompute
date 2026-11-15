@@ -505,6 +505,18 @@ epoch e、チェックポイント step 100 から再開する例
 - 対象ノードは `s_eligible`（direct なら peer アドレスを持つノードのみ）。peer アドレス無しのノードが増えても direct ジョブの目標数は変わらない。
 - 検証: `e2e.rs::lbm_repartitions_when_workers_join_and_leave`（1 ノード 2 parts → 2 ノード 4 parts → 1 ノード 2 parts、最終結果が単一プロセス実行と bit-identical）。
 
+### 6.5b 深いハロー（時間ブロッキング）
+
+直接モードでは、辺ごとに深さ `k` を決めて、`k` 行のハローを `k` ステップに 1 回だけ交換できる。往復の遅延 `L` が 1 ステップの計算時間 `c` より大きいときに、1 ステップあたりの待ち時間を `L/k` に減らす方法である。
+
+* **仕組み**: 各 strip は、隣のある側に `k` 行のゴースト行を持つ（`crates/lbm` の `Strip`）。交換の直後は、ゴースト行まで含めた全行が有効である。1 ステップごとに、隣のある側の有効な窓が 1 行ずつ縮み、`k` ステップ後には内部の行だけが残る。ストリーミングが `y ± 1` の行を読むためである。縮んだ行は、次の交換まで自分で再計算する。再計算する各セルの演算は、1 つの strip で計算した場合と同じなので、結果はビット単位で同じになる。
+* **交換のタイミング**: 辺 `e` は `(step - init.step) % k_e == 0` のステップで交換する。両端に同じ `k_e` を渡し、`init.step` は全 part で共通のチェックポイントのステップである。再起動や再分割のあとは、全 part が交換から始まる。
+* **チェックポイント**: スナップショットは内部の行だけで、全ステップで有効である。ブロックの途中で取っても、`k` の倍数にそろえる必要はない。形式も `repartition` も変わらない。
+* **クランプ**: サーバーは、辺ごとに `min(隣り合う 2 つの strip の行数)` で `k` を抑える（`runtime::stateful::edge_limits`）。
+* **リレーモード**: 常に `k = 1` である。
+* **自動調整**: `halo_depth = 0` のとき、サーバーは各 part が報告する `compute_us` と `wait_us`（`PartProgress`）から、チェックポイントのたびに深さを見直す。待ち時間は、全 part の最小値を純粋な遅延とみなす。`L = 1 ステップあたりの待ち × 現在の k`、`k* = sqrt(L · h / c1)`（`h` は strip の行数の平均、`c1` は `k = 1` に換算した計算時間）を、1〜8 に抑える。予測される高速化が 1.15 倍以上のときだけ、最新のチェックポイントから再起動して深さを変える。上限を 8 にしたのは、検証実験で、遅い part やジッタのある part がいると深さを大きくしすぎるのが逆効果だったためである。
+* **テスト**: `crates/lbm/tests/deep_halo.rs`（深さの組み合わせ、行数の不揃い、ブロックの途中からの再開と再分割）と、`crates/server/tests/e2e.rs` の `lbm_deep_halo_*`、`lbm_auto_halo_depth_adapts_to_latency`。
+
 ### 6.6 チェックポイント
 
 リレーモード:
@@ -597,7 +609,7 @@ direct モード（`pending` マップによる組み立て）:
 
 ```rust
 Persisted {
-    magic: u32,                    // 0x4f43_5302
+    magic: u32,                    // 0x4f43_5303
     sched: SchedulerSnapshot,
     stateful: Vec<SJobSnapshot>,
 }
@@ -613,7 +625,7 @@ Persisted {
 
 `SJobSnapshot` は id、kernel、part ごとの params、steps、`ck_every`、`checkpoint: Option<(step, Vec<Vec<u8>>)>`、`rollbacks`、`final_state`、`failed`、`direct`、`parts_per_node`、`repartitions` を保持する。
 
-magic は v3 の永続化形式で `0x4f43_5301` から `0x4f43_5302` に上がった（`direct` / `parts_per_node` / `repartitions` の追加に対応）。**旧 magic のファイルは「未知の形式」として無視され、空の状態で起動する**（マイグレーションは無い）。epoch・`step`・`placement`・`progress`・`pending`・`last_target`・`direct_failures` は保存しない。
+magic は v3 の永続化形式で `0x4f43_5301` から `0x4f43_5302` に上がり（`direct` / `parts_per_node` / `repartitions` の追加）、v4 で `0x4f43_5303` に上がった（`halo_req` / `halo_depth` / `retunes` の追加）。**旧 magic のファイルは「未知の形式」として無視され、空の状態で起動する**（マイグレーションは無い）。epoch・`step`・`placement`・`progress`・`pending`・`last_target`・`direct_failures` は保存しない。
 
 ### 7.3 保存
 
@@ -818,13 +830,13 @@ magic は v3 の永続化形式で `0x4f43_5301` から `0x4f43_5302` に上が�
 
 | 項目 | 値 |
 |---|---|
-| magic | `0x4f43_5302` |
+| magic | `0x4f43_5303` |
 | 形式 | postcard（`Persisted`） |
 | 置換方法 | `state.bin.tmp` → `state.bin` の rename |
 | fsync | なし |
 | ノード情報 | 保存しない |
 | モジュール | `modules/<blake3>.wasm` に別保存 |
-| スキーマ版 | magic のみ（旧 magic `0x4f43_5301` は「未知の形式」として無視） |
+| スキーマ版 | magic のみ（旧 magic `0x4f43_5301` / `0x4f43_5302` は「未知の形式」として無視） |
 
 ---
 

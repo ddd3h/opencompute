@@ -15,6 +15,22 @@ pub trait Kernel: Send {
     fn step(&mut self, lo: Option<&[u8]>, hi: Option<&[u8]>) -> Result<(), String>;
     /// Full serialisable state.
     fn snapshot(&self) -> Vec<u8>;
+    /// Like [`boundary`](Kernel::boundary) but only the requested sides need to be filled
+    /// (the other may be empty). Lets a kernel skip serialising data that is not sent this step.
+    fn boundary_for(&self, _want_lo: bool, _want_hi: bool) -> (Vec<u8>, Vec<u8>) {
+        self.boundary()
+    }
+    /// Use halos that are `lo` / `hi` rows deep on the lower / upper edge, exchanged once every
+    /// that many steps (temporal blocking). `boundary()` then returns that many rows and
+    /// `step()` receives `None` for a side whose ghost rows are still valid. Kernels that do not
+    /// support this accept only depth 1.
+    fn set_depth(&mut self, lo: u32, hi: u32) -> Result<(), String> {
+        if lo == 1 && hi == 1 {
+            Ok(())
+        } else {
+            Err("this kernel does not support deep halos".into())
+        }
+    }
 }
 
 struct Lbm(opencompute_lbm::Strip);
@@ -28,6 +44,12 @@ impl Kernel for Lbm {
     }
     fn snapshot(&self) -> Vec<u8> {
         self.0.snapshot()
+    }
+    fn boundary_for(&self, want_lo: bool, want_hi: bool) -> (Vec<u8>, Vec<u8>) {
+        self.0.boundary_for(want_lo, want_hi)
+    }
+    fn set_depth(&mut self, lo: u32, hi: u32) -> Result<(), String> {
+        self.0.set_depth(lo as usize, hi as usize)
     }
 }
 
@@ -80,4 +102,25 @@ pub fn repartition(
             .collect(),
         ns,
     ))
+}
+
+/// Largest halo depth each edge between consecutive parts can use (`params.len() - 1` entries).
+/// Kernels without deep-halo support report 1 everywhere.
+pub fn edge_limits(kernel: &str, params: &[Vec<u8>]) -> Vec<u32> {
+    let one = vec![1; params.len().saturating_sub(1)];
+    if kernel != opencompute_lbm::KERNEL_NAME {
+        return one;
+    }
+    let rows: Option<Vec<u32>> = params
+        .iter()
+        .map(|p| {
+            postcard::from_bytes::<opencompute_lbm::LbmParams>(p)
+                .ok()
+                .map(|p| p.rows as u32)
+        })
+        .collect();
+    match rows {
+        Some(r) => r.windows(2).map(|w| w[0].min(w[1]).max(1)).collect(),
+        None => one,
+    }
 }

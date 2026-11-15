@@ -107,11 +107,25 @@ pub fn decompose(nx: usize, ny: usize, parts: usize, tau: f64, force_x: f64) -> 
 }
 
 /// One strip's state.
+///
+/// Rows are stored with `g_lo` ghost rows below and `g_hi` above (only on sides that have a
+/// neighbour). The ghost rows hold a copy of the neighbour's boundary rows. A ghost of depth `k`
+/// is refreshed every `k` steps ("temporal blocking"): after an exchange the window of valid
+/// rows is the whole local array, and each step it shrinks by one row on every side that has a
+/// neighbour, because the outermost valid row lacks one of its streaming sources. The strip
+/// recomputes the shrinking ghost rows itself instead of waiting for a message. Every node
+/// still performs exactly the same arithmetic as in a single-strip run, so results stay
+/// bit-identical for any depth.
 pub struct Strip {
     p: LbmParams,
-    /// `f[i][row*nx + x]`, post-collision.
+    g_lo: usize,
+    g_hi: usize,
+    /// `f[i][ly*nx + x]` with `ly` in local rows (ghosts included), post-collision.
     f: Vec<Vec<f64>>,
     scratch: Vec<Vec<f64>>,
+    /// Valid local rows are `[vlo, vhi)`.
+    vlo: usize,
+    vhi: usize,
 }
 
 fn feq(i: usize, rho: f64, ux: f64, uy: f64) -> f64 {
@@ -120,42 +134,77 @@ fn feq(i: usize, rho: f64, ux: f64, uy: f64) -> f64 {
 }
 
 impl Strip {
+    fn build(p: LbmParams, g_lo: usize, g_hi: usize, interior: Option<Vec<Vec<f64>>>) -> Self {
+        let nrows = g_lo + p.rows + g_hi;
+        let n = p.nx * nrows;
+        let mut s = Self {
+            g_lo,
+            g_hi,
+            f: (0..9).map(|i| vec![W[i]; n]).collect(),
+            scratch: vec![vec![0.0; n]; 9],
+            vlo: g_lo,
+            vhi: g_lo + p.rows,
+            p,
+        };
+        match interior {
+            Some(int) => {
+                let off = g_lo * s.p.nx;
+                for (dst, src) in s.f.iter_mut().zip(&int) {
+                    dst[off..off + src.len()].copy_from_slice(src);
+                }
+            }
+            None => s.collide(g_lo, g_lo + s.p.rows),
+        }
+        s
+    }
+
     /// Fresh strip at rest (ρ=1, u=0) at step 0, or restored from a [`snapshot`](Self::snapshot).
+    /// Ghost depth is 1 on every side that has a neighbour until [`set_depth`](Self::set_depth).
     pub fn new(p: LbmParams, restore: Option<&[u8]>) -> Result<Self, String> {
         p.validate()?;
         let n = p.nx * p.rows;
-        let f = match restore {
+        let interior = match restore {
             Some(b) => {
                 let f = codec::decode(b)?;
                 if f.len() != 9 || f.iter().any(|v| v.len() != n) {
                     return Err("snapshot does not match geometry".into());
                 }
-                f
+                Some(f)
             }
-            None => {
-                let mut s = Self {
-                    f: (0..9).map(|i| vec![W[i]; n]).collect(),
-                    scratch: vec![],
-                    p: p.clone(),
-                };
-                s.collide();
-                return Ok(Self {
-                    scratch: vec![vec![0.0; n]; 9],
-                    ..s
-                });
-            }
+            None => None,
         };
-        Ok(Self {
-            p,
-            f,
-            scratch: vec![vec![0.0; n]; 9],
-        })
+        let (g_lo, g_hi) = (usize::from(p.has_lo()), usize::from(p.has_hi()));
+        Ok(Self::build(p, g_lo, g_hi, interior))
     }
 
-    /// BGK collision with velocity-shift forcing, in place.
-    fn collide(&mut self) {
+    /// Largest ghost depth this strip can serve (its own row count).
+    pub fn max_depth(&self) -> usize {
+        self.p.rows
+    }
+
+    /// Set the ghost depth of the lower/upper edge (ignored on sides without a neighbour).
+    /// Both strips sharing an edge must use the same depth. Ghost rows become invalid: the
+    /// next [`step`](Self::step) needs fresh halos on both sides.
+    pub fn set_depth(&mut self, lo: usize, hi: usize) -> Result<(), String> {
+        let g_lo = if self.p.has_lo() { lo } else { 0 };
+        let g_hi = if self.p.has_hi() { hi } else { 0 };
+        if (self.p.has_lo() && !(1..=self.p.rows).contains(&lo))
+            || (self.p.has_hi() && !(1..=self.p.rows).contains(&hi))
+        {
+            return Err("halo depth must be between 1 and the number of rows".into());
+        }
+        let n = self.p.nx * self.p.rows;
+        let off = self.g_lo * self.p.nx;
+        let interior: Vec<Vec<f64>> = self.f.iter().map(|v| v[off..off + n].to_vec()).collect();
+        let p = self.p.clone();
+        *self = Self::build(p, g_lo, g_hi, Some(interior));
+        Ok(())
+    }
+
+    /// BGK collision with velocity-shift forcing on local rows `[a, b)`, in place.
+    fn collide(&mut self, a: usize, b: usize) {
         let (tau, fx) = (self.p.tau, self.p.force_x);
-        for k in 0..self.p.nx * self.p.rows {
+        for k in a * self.p.nx..b * self.p.nx {
             let mut rho = 0.0;
             let (mut mx, mut my) = (0.0, 0.0);
             #[allow(clippy::needless_range_loop)]
@@ -174,54 +223,89 @@ impl Strip {
         }
     }
 
-    /// `(lowest row, highest row)` of the interior, all 9 populations each, serialised.
+    /// The boundary rows neighbours need: `(lowest g_lo interior rows, highest g_hi interior
+    /// rows)`, 9 populations × rows × nx values each, serialised. A side without a neighbour is
+    /// empty.
     pub fn boundary(&self) -> (Vec<u8>, Vec<u8>) {
-        let row = |y: usize| -> Vec<u8> {
+        self.boundary_for(true, true)
+    }
+
+    /// Like [`boundary`](Self::boundary) but only serialises the requested sides.
+    pub fn boundary_for(&self, want_lo: bool, want_hi: bool) -> (Vec<u8>, Vec<u8>) {
+        let nx = self.p.nx;
+        let rows = |first: usize, count: usize| -> Vec<u8> {
+            if count == 0 {
+                return Vec::new();
+            }
             let r: Vec<f64> = (0..9)
-                .flat_map(|i| self.f[i][y * self.p.nx..(y + 1) * self.p.nx].to_vec())
+                .flat_map(|i| self.f[i][first * nx..(first + count) * nx].iter().copied())
                 .collect();
             postcard::to_stdvec(&r).expect("encode")
         };
-        (row(0), row(self.p.rows - 1))
+        let lo = if want_lo {
+            rows(self.g_lo, self.g_lo)
+        } else {
+            Vec::new()
+        };
+        let hi = if want_hi {
+            rows(self.g_lo + self.p.rows - self.g_hi, self.g_hi)
+        } else {
+            Vec::new()
+        };
+        (lo, hi)
     }
 
-    fn decode_halo(&self, b: &[u8]) -> Result<Vec<f64>, String> {
+    fn decode_halo(&self, b: &[u8], depth: usize) -> Result<Vec<f64>, String> {
         let v: Vec<f64> = postcard::from_bytes(b).map_err(|e| format!("bad halo: {e}"))?;
-        if v.len() != 9 * self.p.nx {
+        if v.len() != 9 * depth * self.p.nx {
             return Err("halo has wrong size".into());
         }
         Ok(v)
     }
 
-    /// Advance one step. `lo`/`hi` are required iff the strip has a lower/upper neighbour.
+    fn install_ghost(&mut self, first_row: usize, depth: usize, v: &[f64]) {
+        let nx = self.p.nx;
+        for i in 0..9 {
+            let src = &v[i * depth * nx..(i + 1) * depth * nx];
+            self.f[i][first_row * nx..(first_row + depth) * nx].copy_from_slice(src);
+        }
+    }
+
+    /// Advance one step.
+    ///
+    /// `lo`/`hi` carry the neighbour's boundary rows of the *current* step when an exchange
+    /// happens (always, with depth 1). They may be `None` while the ghost rows of that side
+    /// are still valid (depth > 1). A side without a neighbour must be `None`.
     pub fn step(&mut self, lo: Option<&[u8]>, hi: Option<&[u8]>) -> Result<(), String> {
-        let (nx, h) = (self.p.nx, self.p.rows);
-        let lo_g = match (self.p.has_lo(), lo) {
-            (true, Some(b)) => Some(self.decode_halo(b)?),
-            (false, None) => None,
-            _ => return Err("lower halo presence mismatch".into()),
-        };
-        let hi_g = match (self.p.has_hi(), hi) {
-            (true, Some(b)) => Some(self.decode_halo(b)?),
-            (false, None) => None,
-            _ => return Err("upper halo presence mismatch".into()),
-        };
+        let (nx, nrows) = (self.p.nx, self.g_lo + self.p.rows + self.g_hi);
+        if (lo.is_some() && !self.p.has_lo()) || (hi.is_some() && !self.p.has_hi()) {
+            return Err("halo given for a side without a neighbour".into());
+        }
+        if let Some(b) = lo {
+            let v = self.decode_halo(b, self.g_lo)?;
+            self.install_ghost(0, self.g_lo, &v);
+            self.vlo = 0;
+        }
+        if let Some(b) = hi {
+            let v = self.decode_halo(b, self.g_hi)?;
+            self.install_ghost(self.g_lo + self.p.rows, self.g_hi, &v);
+            self.vhi = nrows;
+        }
+        if (self.p.has_lo() && self.vlo >= self.g_lo)
+            || (self.p.has_hi() && self.vhi <= self.g_lo + self.p.rows)
+        {
+            return Err("ghost rows exhausted: halo missing".into());
+        }
+        let a = if self.p.has_lo() { self.vlo + 1 } else { 0 };
+        let b = if self.p.has_hi() { self.vhi - 1 } else { nrows };
         for i in 0..9 {
             let (cx, cy) = C[i];
-            for y in 0..h {
+            for y in a..b {
                 let sy = y as i32 - cy;
                 for x in 0..nx {
                     let sx = (x as i32 - cx).rem_euclid(nx as i32) as usize;
-                    self.scratch[i][y * nx + x] = if sy < 0 {
-                        match &lo_g {
-                            Some(g) => g[i * nx + sx],
-                            None => self.f[OPP[i]][y * nx + x], // wall: bounce back
-                        }
-                    } else if sy >= h as i32 {
-                        match &hi_g {
-                            Some(g) => g[i * nx + sx],
-                            None => self.f[OPP[i]][y * nx + x],
-                        }
+                    self.scratch[i][y * nx + x] = if sy < 0 || sy >= nrows as i32 {
+                        self.f[OPP[i]][y * nx + x] // wall: bounce back
                     } else {
                         self.f[i][sy as usize * nx + sx]
                     };
@@ -229,13 +313,19 @@ impl Strip {
             }
         }
         std::mem::swap(&mut self.f, &mut self.scratch);
-        self.collide();
+        self.vlo = a;
+        self.vhi = b;
+        self.collide(a, b);
         Ok(())
     }
 
-    /// Serialise the full state (for checkpoints and final results).
+    /// Serialise the full state (for checkpoints and final results). Interior rows only; they
+    /// are valid after every step regardless of the ghost depth.
     pub fn snapshot(&self) -> Vec<u8> {
-        codec::encode(&self.f)
+        let n = self.p.nx * self.p.rows;
+        let off = self.g_lo * self.p.nx;
+        let interior: Vec<Vec<f64>> = self.f.iter().map(|v| v[off..off + n].to_vec()).collect();
+        codec::encode(&interior)
     }
 }
 
@@ -335,6 +425,47 @@ pub fn run_local(params: &[LbmParams], steps: u64) -> Result<Vec<Vec<u8>>, Strin
         for (i, s) in strips.iter_mut().enumerate() {
             let lo = (i > 0).then(|| bs[i - 1].1.as_slice());
             let hi = (i + 1 < bs.len()).then(|| bs[i + 1].0.as_slice());
+            s.step(lo, hi)?;
+        }
+    }
+    Ok(strips.iter().map(Strip::snapshot).collect())
+}
+
+/// Like [`run_local`] but continues from optional `snapshots` for `steps` steps with a ghost
+/// depth per edge (`depths[e]` for the edge between strip `e` and `e + 1`). Edge `e` exchanges
+/// at the steps where `(t - start) % depths[e] == 0`, counting steps from this call's start,
+/// exactly as the distributed workers do. Reference driver for tests.
+pub fn run_local_depth(
+    params: &[LbmParams],
+    snapshots: Option<&[Vec<u8>]>,
+    steps: u64,
+    depths: &[usize],
+) -> Result<Vec<Vec<u8>>, String> {
+    if depths.len() + 1 != params.len() {
+        return Err("need one depth per edge".into());
+    }
+    let mut strips: Vec<Strip> = params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let mut s = Strip::new(p.clone(), snapshots.map(|v| v[i].as_slice()))?;
+            let lo = i.checked_sub(1).map_or(1, |e| depths[e]);
+            let hi = depths.get(i).copied().unwrap_or(1);
+            s.set_depth(lo, hi)?;
+            Ok(s)
+        })
+        .collect::<Result<_, String>>()?;
+    for t in 0..steps {
+        let bs: Vec<_> = strips.iter().map(Strip::boundary).collect();
+        for (i, s) in strips.iter_mut().enumerate() {
+            let lo = i
+                .checked_sub(1)
+                .filter(|e| t % depths[*e] as u64 == 0)
+                .map(|e| bs[e].1.as_slice());
+            let hi = depths
+                .get(i)
+                .filter(|d| t % **d as u64 == 0)
+                .map(|_| bs[i + 1].0.as_slice());
             s.step(lo, hi)?;
         }
     }

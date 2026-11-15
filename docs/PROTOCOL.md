@@ -20,8 +20,8 @@ socket. The authoritative definitions live in:
 
 ## 1. Versions and transport
 
-* **Protocol version:** `PROTOCOL_VERSION = 3` (`u16`).
-* **Worker ALPN:** `opencompute/3` (`b"opencompute/3"`), negotiated by QUIC between a client and
+* **Protocol version:** `PROTOCOL_VERSION = 4` (`u16`).
+* **Worker ALPN:** `opencompute/4` (`b"opencompute/4"`), negotiated by QUIC between a client and
   the server.
 * **Peer ALPN:** `opencompute-peer/1` (`b"opencompute-peer/1"`), negotiated by QUIC between two
   clients for direct halo exchange. It has no version field on the wire; its version is the ALPN
@@ -145,7 +145,7 @@ the connection/session is ended. See §7.
 ```
 client                                              server
   |                                                    |
-  |-- QUIC connect, ALPN "opencompute/3" ------------->|  (mutual TLS; server records remote NodeId)
+  |-- QUIC connect, ALPN "opencompute/4" ------------->|  (mutual TLS; server records remote NodeId)
   |-- open bidirectional stream ---------------------->|
   |-- ClientMessage::Join(JoinRequest) -------------->|  (server waits at most 10 s, max 4 MiB)
   |                                                    |  validate version, token, capabilities, peer_addr
@@ -156,14 +156,14 @@ client                                              server
   |<-- Assign / CancelTask / ModuleTransfer / ... -----|
 ```
 
-1. **Connect.** The client dials the EndpointId from the ticket with ALPN `opencompute/3` and opens
+1. **Connect.** The client dials the EndpointId from the ticket with ALPN `opencompute/4` and opens
    one bidirectional stream. The server accepts the stream and derives the peer `NodeId` from the
    authenticated QUIC identity.
 2. **Join.** The client must send `ClientMessage::Join` as the **first frame**. The server reads it
    with a 10-second timeout and a 4 MiB frame limit.
 3. **Validate.** The server checks, in order:
    * first message is `Join` (otherwise `JoinRejected`, reason `first message must be Join`);
-   * `protocol_version == 3` (otherwise a version-mismatch reason);
+   * `protocol_version == 4` (otherwise a version-mismatch reason);
    * `token` equals the server token in constant time (otherwise `invalid join token`);
    * `capabilities.validate()`:
      * `allowed_cores` in `1..=4096`;
@@ -181,7 +181,7 @@ client                                              server
      `Shutdown { reason: "replaced by a newer session" }`;
    * sends `JoinAccepted` with the server's protocol version, the authenticated `node_id`, and
      `heartbeat_interval_ms` (default **2000 ms**; server config may differ).
-5. **Client accepts.** The client requires `JoinAccepted.protocol_version == 3`; a mismatch is
+5. **Client accepts.** The client requires `JoinAccepted.protocol_version == 4`; a mismatch is
    treated as a rejection. It clamps `heartbeat_interval_ms` to `50..=60_000` ms, starts its
    heartbeat ticker and its reader loop.
 6. **Reject.** On failure the server sends `JoinRejected { reason }`, waits up to 3 seconds for the
@@ -1087,7 +1087,7 @@ codec ever disagree, that test fails.
 
 ## 11. Changing the protocol
 
-* `PROTOCOL_VERSION` and `ALPN` are both `3` / `opencompute/3`. An incompatible change must bump
+* `PROTOCOL_VERSION` and `ALPN` are both `4` / `opencompute/4`. An incompatible change must bump
   both (and the ALPN string), because peers with different ALPNs never reach the application
   handshake. The worker protocol and the peer protocol are versioned separately: peer streams use
   `opencompute-peer/1`, and `PeerMessage` has no version field of its own.
@@ -1101,3 +1101,21 @@ codec ever disagree, that test fails.
   bump. The peer frame limit is a client constant, not a protocol constant.
 * There is no extension/TLV mechanism, no per-message length or type tag beyond the enum variant,
   and no protocol negotiation beyond ALPN and the version fields in `Join`/`JoinAccepted`.
+
+## 11. Changes in protocol version 4 (halo depth)
+
+Version 4 adds temporal blocking to direct-mode stateful jobs. Fields were appended to existing
+structs, so every peer must run version 4 (the version and ALPN were bumped).
+
+| Struct | New field | Meaning |
+|---|---|---|
+| `PartInit` | `edge_depths: Vec<u32>` | Halo depth of each edge (`peers.len() - 1` entries; edge `e` joins parts `e` and `e + 1`). Empty means depth 1. Edge `e` exchanges halos at the steps where `(step - init.step) % edge_depths[e] == 0`, and the halo carries `edge_depths[e]` rows. Both ends of an edge receive the same value. |
+| `PartProgress` | `steps_done: u32`, `compute_us: u64`, `wait_us: u64` | Steps covered since the previous report, microseconds spent computing them, and microseconds spent waiting for neighbours' halos. The server uses them to tune the depth. |
+| `SubmitStateful` | `halo_depth: u32` | Requested depth. `0` = automatic, `1` = exchange every step. |
+| `StatefulInfo` | `halo_depth: u32`, `retunes: u32` | Largest depth in use, and how often the automatic tuner changed it. |
+
+`state.bin` magic changed to `0x4f43_5303` (adds `halo_req`, `halo_depth`, `retunes` per stateful
+job). Files with the old magic are ignored.
+
+The server clamps the depth of every edge to the smaller row count of the two parts it joins.
+In relay mode (`direct = false`) the depth is always 1 and `edge_depths` is empty.

@@ -45,7 +45,12 @@ struct TestClient {
 }
 
 fn client(name: &str, cores: u32, ticket: &Ticket) -> TestClient {
+    client_with_latency(name, cores, ticket, Duration::ZERO)
+}
+
+fn client_with_latency(name: &str, cores: u32, ticket: &Ticket, latency: Duration) -> TestClient {
     let mut cfg = ClientConfig::detect(name);
+    cfg.emulated_halo_latency = latency;
     cfg.allowed_cores = cores;
     cfg.max_concurrent_tasks = cores;
     cfg.cache_dir = Some(tmp(name));
@@ -230,6 +235,7 @@ fn lbm_cfg(steps: u64, ck: u64) -> opencompute::LbmRun {
         checkpoint_every: ck,
         direct: false,
         parts_per_node: 0,
+        halo_depth: 1,
     }
 }
 
@@ -440,6 +446,7 @@ async fn lbm_direct_survives_node_loss() {
     let o = opencompute::StatefulOptions {
         direct: true,
         parts_per_node: 0,
+        halo_depth: cfg.halo_depth,
     };
     let job = cluster
         .submit_stateful_with(
@@ -478,6 +485,161 @@ async fn lbm_direct_survives_node_loss() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lbm_deep_halo_is_bit_identical() {
+    let srv = server("deep", 0).await;
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    let _a = client("A", 2, &srv.ticket);
+    let _b = client("B", 2, &srv.ticket);
+    wait_nodes(&cluster, 2).await;
+    // 403 steps: not a multiple of the depth, checkpoints in the middle of blocks.
+    let cfg = opencompute::LbmRun {
+        halo_depth: 4,
+        ..direct_cfg(403, 50)
+    };
+    let (u, info) = cluster
+        .run_lbm(&cfg, Duration::from_secs(120))
+        .await
+        .unwrap();
+    assert_eq!(u, lbm_reference(&cfg), "bit-identical with halo depth 4");
+    assert!(info.direct && info.halo_depth == 4, "{info:?}");
+    assert_eq!(cluster.diag().await.unwrap().halos_relayed, 0);
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lbm_deep_halo_survives_node_loss() {
+    let srv = server("deeploss", 0).await;
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    let a = client("A", 2, &srv.ticket);
+    let _b = client("B", 2, &srv.ticket);
+    wait_nodes(&cluster, 2).await;
+    let cfg = opencompute::LbmRun {
+        halo_depth: 4,
+        ..direct_cfg(6000, 100)
+    };
+    let params = opencompute::lbm::decompose(cfg.nx, cfg.ny, cfg.parts, cfg.tau, cfg.force_x);
+    let blobs = params.iter().map(postcard_bytes).collect();
+    let o = opencompute::StatefulOptions {
+        direct: true,
+        parts_per_node: 0,
+        halo_depth: 4,
+    };
+    let job = cluster
+        .submit_stateful_with(
+            opencompute::lbm::KERNEL_NAME,
+            blobs,
+            cfg.steps,
+            cfg.checkpoint_every,
+            &o,
+        )
+        .await
+        .unwrap();
+    loop {
+        let (info, _) = cluster.stateful_result(job, Duration::ZERO).await.unwrap();
+        assert!(!info.state.starts_with("Failed"), "{}", info.state);
+        if info.checkpoint_step.is_some_and(|c| c >= 200) {
+            assert!(info.step < cfg.steps - 500, "job too short to interrupt");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    a.task.abort();
+    let r = cluster
+        .stateful_result_full(job, Duration::from_secs(180))
+        .await
+        .unwrap();
+    assert_eq!(r.info.state, "Done", "{:?}", r.info);
+    assert!(r.info.rollbacks >= 1);
+    let ps: Vec<opencompute::lbm::LbmParams> = r
+        .final_params
+        .iter()
+        .map(|b| postcard::from_bytes(b).unwrap())
+        .collect();
+    let u = opencompute::lbm::velocity_profile(&ps, &r.final_state.unwrap()).unwrap();
+    assert_eq!(u, lbm_reference(&cfg));
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lbm_deep_halo_with_repartitioning() {
+    let srv = server("deeprepart", 0).await;
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    let _a = client("A", 2, &srv.ticket);
+    wait_nodes(&cluster, 1).await;
+    let cfg = opencompute::LbmRun {
+        halo_depth: 6,
+        ..direct_cfg(12000, 100)
+    };
+    let params = opencompute::lbm::decompose(cfg.nx, cfg.ny, 2, cfg.tau, cfg.force_x);
+    let blobs = params.iter().map(postcard_bytes).collect();
+    let o = opencompute::StatefulOptions {
+        direct: true,
+        parts_per_node: 2,
+        halo_depth: 6,
+    };
+    let job = cluster
+        .submit_stateful_with(
+            opencompute::lbm::KERNEL_NAME,
+            blobs,
+            cfg.steps,
+            cfg.checkpoint_every,
+            &o,
+        )
+        .await
+        .unwrap();
+    for _ in 0..4000 {
+        let (info, _) = cluster.stateful_result(job, Duration::ZERO).await.unwrap();
+        assert!(!info.state.starts_with("Failed"), "{}", info.state);
+        if info.checkpoint_step.is_some_and(|c| c >= 200) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let _b = client("B", 2, &srv.ticket);
+    let r = cluster
+        .stateful_result_full(job, Duration::from_secs(300))
+        .await
+        .unwrap();
+    assert_eq!(r.info.state, "Done", "{:?}", r.info);
+    assert!(r.info.repartitions >= 1, "{:?}", r.info);
+    let ps: Vec<opencompute::lbm::LbmParams> = r
+        .final_params
+        .iter()
+        .map(|b| postcard::from_bytes(b).unwrap())
+        .collect();
+    let u = opencompute::lbm::velocity_profile(&ps, &r.final_state.unwrap()).unwrap();
+    assert_eq!(u, lbm_reference(&cfg), "deep halos survive re-partitioning");
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lbm_auto_halo_depth_adapts_to_latency() {
+    let srv = server("autodepth", 0).await;
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    // 5 ms emulated one-way latency between the clients.
+    let lat = Duration::from_millis(5);
+    let _a = client_with_latency("A", 2, &srv.ticket, lat);
+    let _b = client_with_latency("B", 2, &srv.ticket, lat);
+    wait_nodes(&cluster, 2).await;
+    let cfg = opencompute::LbmRun {
+        halo_depth: 0, // automatic
+        ..direct_cfg(1500, 100)
+    };
+    let (u, info) = cluster
+        .run_lbm(&cfg, Duration::from_secs(300))
+        .await
+        .unwrap();
+    assert_eq!(
+        u,
+        lbm_reference(&cfg),
+        "retuning keeps the result bit-identical"
+    );
+    assert!(info.retunes >= 1, "tuner never reacted: {info:?}");
+    assert!(info.halo_depth > 1, "{info:?}");
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lbm_repartitions_when_workers_join_and_leave() {
     let srv = server("repart", 0).await;
     let cluster = Cluster::connect(&srv.control_path).await.unwrap();
@@ -489,6 +651,7 @@ async fn lbm_repartitions_when_workers_join_and_leave() {
     let o = opencompute::StatefulOptions {
         direct: true,
         parts_per_node: 2,
+        halo_depth: cfg.halo_depth,
     };
     let job = cluster
         .submit_stateful_with(
