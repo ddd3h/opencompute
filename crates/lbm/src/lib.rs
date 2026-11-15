@@ -10,6 +10,7 @@
 //!
 //! Because every node performs the same arithmetic in the same order regardless of the
 //! partitioning, a decomposed run is **bit-identical** to a single-strip run (tested).
+pub mod codec;
 
 use serde::{Deserialize, Serialize};
 
@@ -125,8 +126,7 @@ impl Strip {
         let n = p.nx * p.rows;
         let f = match restore {
             Some(b) => {
-                let f: Vec<Vec<f64>> =
-                    postcard::from_bytes(b).map_err(|e| format!("bad snapshot: {e}"))?;
+                let f = codec::decode(b)?;
                 if f.len() != 9 || f.iter().any(|v| v.len() != n) {
                     return Err("snapshot does not match geometry".into());
                 }
@@ -235,7 +235,7 @@ impl Strip {
 
     /// Serialise the full state (for checkpoints and final results).
     pub fn snapshot(&self) -> Vec<u8> {
-        postcard::to_stdvec(&self.f).expect("encode")
+        codec::encode(&self.f)
     }
 }
 
@@ -271,7 +271,7 @@ pub fn repartition(
         .map(|_| Vec::with_capacity(nx * first.ny_global))
         .collect();
     for (p, s) in params.iter().zip(snaps) {
-        let f: Vec<Vec<f64>> = postcard::from_bytes(s).map_err(|e| e.to_string())?;
+        let f = codec::decode(s)?;
         if f.len() != 9
             || f.iter().any(|v| v.len() != p.nx * p.rows)
             || p.y0 != global[0].len() / nx
@@ -292,7 +292,7 @@ pub fn repartition(
                 .iter()
                 .map(|g| g[p.y0 * nx..(p.y0 + p.rows) * nx].to_vec())
                 .collect();
-            postcard::to_stdvec(&f).expect("encode")
+            codec::encode(&f)
         })
         .collect();
     Ok((newp, Some(out)))
@@ -303,7 +303,7 @@ pub fn repartition(
 pub fn velocity_profile(params: &[LbmParams], snapshots: &[Vec<u8>]) -> Result<Vec<f64>, String> {
     let mut out = vec![];
     for (p, s) in params.iter().zip(snapshots) {
-        let f: Vec<Vec<f64>> = postcard::from_bytes(s).map_err(|e| e.to_string())?;
+        let f = codec::decode(s)?;
         if f.len() != 9 || f.iter().any(|v| v.len() != p.nx * p.rows) {
             return Err("snapshot does not match geometry".into());
         }

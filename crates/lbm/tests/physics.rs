@@ -6,7 +6,7 @@ use opencompute_lbm::{Strip, decompose, run_local, velocity_profile};
 fn total_mass(snapshots: &[Vec<u8>]) -> f64 {
     let mut total = 0.0;
     for snap in snapshots {
-        let f: Vec<Vec<f64>> = postcard::from_bytes(snap).expect("decode snapshot");
+        let f = opencompute_lbm::codec::decode(snap).expect("decode snapshot");
         assert_eq!(f.len(), 9, "snapshot must hold 9 populations");
         for pop in &f {
             total += pop.iter().sum::<f64>();
