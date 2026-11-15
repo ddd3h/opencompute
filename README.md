@@ -1,154 +1,109 @@
 # OpenCompute
 
-P2P distributed compute framework in Rust. A **server** splits jobs into independent tasks; **clients**
-(volunteer machines) join with an explicit ticket, and run the tasks – built-in functions or
-sandboxed WebAssembly modules – on the CPU they chose to lend.
+![OpenCompute のしくみ](docs/img/overview.svg)
 
-Status: **Phases 1–4 implemented in a first version** (tested on one machine; see "Not done / not verified").
+OpenCompute は、複数のコンピュータの CPU をネットワークでつなぎ、大きな計算を分担して実行する Rust 製の P2P 分散計算フレームワークです。サーバーが仕事を小さなタスクに分けて配り、参加したクライアントが計算して結果を返します。
 
-## Layout
+状況: フェーズ 1〜4 の初版を実装しました。動作確認は 1 台のマシン上だけです。複数台の LAN、NAT の内側、`--relay` は未検証です(下の「できていないこと」)。
 
-| crate | role |
-|---|---|
-| `protocol` | IDs (`JobId`, `TaskId`, `NodeId`, `ModuleHash`), worker + control messages, postcard framing with size limits |
-| `scheduler` | pure state machine: FIFO queue, slots, retries, timeouts, node loss, duplicate-result protection, pluggable `PlacementPolicy` |
-| `network` | iroh (QUIC, key-based mutual auth, NAT traversal) wrapper, `Ticket`, key files |
-| `runtime` | executes tasks: built-ins + Wasmtime sandbox (fuel, memory, wall-clock, no imports) + module cache |
-| `client` | worker: join, heartbeat, module fetch, rayon pool, reconnect, graceful leave |
-| `server` | coordinator: accept, dispatch, dead-node detection, module store, control socket, optional in-process worker |
-| `compute-api` (`opencompute`) | user API: `Cluster::connect().load_module().map()` |
-| `lbm` | D2Q9 lattice-Boltzmann strip kernel with halo rows (pure, no I/O) |
-| `guest` | dependency-free helper macro for writing WASM task modules |
-| `examples/wasm-modules` | `hello-world`, `fibonacci` guests (separate workspace, `wasm32-unknown-unknown`) |
+## 特徴
 
-Dependency direction: `protocol ← scheduler, network, runtime, compute-api ← client ← server` (no cycles).
+- 暗号化された P2P 通信。iroh(QUIC)を使い、公開鍵で相互に認証します。
+- 参加は、利用者が確認に `y` と答えたときだけです。Ctrl-C でいつでも抜けられます。
+- 計算は、組み込みの関数か、サンドボックス内の WASM(Wasmtime)です。ファイル・ネットワーク・OS コマンドには触れません。
+- クライアントが止まっても続行します。ハートビートの途切れを検知し、タスクを別のクライアントに回します。
+- サーバーを再起動しても、ジョブ・結果・チェックポイントを復元します。
+- ステップを繰り返す計算にも対応します。例として、2 次元の流体シミュレーション(D2Q9 格子ボルツマン法)を、クライアント間の直接通信、チェックポイントからの巻き戻し、参加・離脱に応じた領域の再分割つきで分散実行できます。結果は、1 プロセスで計算した場合とビット単位で一致します。
 
-## Quick start (one machine)
+## 動かしてみる
+
+必要なものは Rust のツールチェーンです。
 
 ```bash
 cargo build --release
-rustup target add wasm32-unknown-unknown
-(cd examples/wasm-modules && cargo build --release --target wasm32-unknown-unknown)
 
-# terminal 1 – server (also computes with 2 cores; drop the flag for a pure coordinator)
+# ターミナル 1: サーバー(チケットが表示される)
 target/release/opencompute-server start --local-worker-cores 2
-#   prints:  ticket : oc1....
+#   ticket = oc1...
 
-# terminals 2, 3 – clients (each asks for consent unless --yes)
+# ターミナル 2, 3: クライアント(確認が出るので読んで y と答える)
 target/release/opencompute-client join --server <TICKET> --cores 2 --name A --data-dir /tmp/a
 target/release/opencompute-client join --server <TICKET> --cores 2 --name B --data-dir /tmp/b
 
-# terminal 4
+# ターミナル 4: 状況の確認と、素数を数える計算の投入
 target/release/opencompute-server nodes
 target/release/opencompute-server submit prime-count --upto 2000000 --tasks 100
-target/release/opencompute-server jobs
-target/release/opencompute-server status 1
-cargo run --release -p opencompute-compute-api --example fibonacci   # WASM, uses ./opencompute-server-data/control.sock
 ```
 
-Automated acceptance scenario (server + 2 client processes, 100 tasks, `kill -9` of client A mid-run,
-re-assignment asserted, result compared with the known π(2·10⁶)=148933): `scripts/demo-local.sh`.
+200 万未満の素数は 148933 個です。クライアントを `kill -9` で止める実演を含む、自動の受け入れ確認は `PROFILE=release scripts/demo-local.sh` です。手順の詳細は [docs/02-quickstart.md](docs/02-quickstart.md) にあります。
 
-## Documentation (日本語)
+自分の計算を WASM にして動かす方法は [docs/04-write-a-module.md](docs/04-write-a-module.md)、流体シミュレーションは [docs/05-stateful-lbm.md](docs/05-stateful-lbm.md) です。
 
-Illustrated guides live in [`docs/`](docs/README.md): overview, quickstart, concepts, writing a WASM module, stateful/LBM jobs, safety, operations, internals, and the English wire-protocol reference ([`docs/PROTOCOL.md`](docs/PROTOCOL.md)).
+## ドキュメント
 
-## Stateful jobs: distributed fluid simulation (Phase 4)
+図の多い日本語の解説が [`docs/`](docs/README.md) にあります。
 
-```bash
-opencompute-server submit lbm --nx 512 --ny 512 --parts 4 --steps 300 --checkpoint-every 100
-```
-A D2Q9 channel flow is cut into `--parts` horizontal strips spread round-robin over the connected
-nodes. Each worker keeps its strip in memory; **every step** the server relays one halo row between
-neighbouring strips and acts as a barrier (step *s+1* starts only when all strips reported step *s*).
-Every `--checkpoint-every` steps full snapshots are stored on the server. If a node disappears, **all**
-strips roll back to the last checkpoint (new epoch) and continue on the survivors. The command verifies
-that the result is **bit-identical** to a single-process run and compares the centre velocity with the
-analytic Poiseuille value. Library use: `Cluster::run_lbm(&LbmRun{..}, timeout)`.
+| 読みたいこと | 文書 |
+|---|---|
+| 何ができるのか | [01 OpenCompute とは](docs/01-overview.md) |
+| 動かし方 | [02 動かしてみる](docs/02-quickstart.md) |
+| 用語 | [03 用語と基本の考え方](docs/03-concepts.md) |
+| 自作の計算 | [04 計算モジュールを書く](docs/04-write-a-module.md) |
+| 繰り返し計算 | [05 繰り返し計算と流体シミュレーション](docs/05-stateful-lbm.md) |
+| 参加者向けの安全性 | [06 安全性と参加者のための説明](docs/06-safety.md) |
+| 運用 | [07 運用とトラブルシューティング](docs/07-operations.md) |
+| 内部構造 | [08 内部構造](docs/08-architecture.md) |
+| 通信仕様(英語) | [PROTOCOL.md](docs/PROTOCOL.md) |
 
-### Direct client↔client halos and re-partitioning
+## 構成
 
-* `--direct`: workers exchange halo rows **directly** (iroh QUIC, ALPN `opencompute-peer/1`) and only report
-  progress/snapshots to the server; parts on the same worker use an in-process mailbox. A halo is only used if it
-  comes from the node the server named as neighbour. If peers cannot reach each other (no progress for
-  `stall_timeout`, default 20 s, twice in a row) the server rolls back and **falls back to relaying** halos.
-* `--parts-per-node N`: the job keeps `N × workers` parts. When a worker joins or leaves, the job is re-split from
-  its last checkpoint (`opencompute_lbm::repartition`) – the result stays bit-identical to a single-process run.
+| クレート | 役割 |
+|---|---|
+| `protocol` | ID、メッセージ、postcard のフレーム(サイズ上限つき) |
+| `scheduler` | タスクの順番・再試行・タイムアウト・ノード喪失を扱う、I/O を持たない状態機械 |
+| `network` | iroh のラッパー、チケット、鍵ファイル |
+| `runtime` | タスクの実行。組み込み関数と、Wasmtime のサンドボックス |
+| `client` | ワーカー。参加、ハートビート、並列実行、再接続 |
+| `server` | 司令塔。受け付け、割り当て、死活監視、保存、制御用ソケット、CLI |
+| `compute-api`(`opencompute`) | 利用者向け API。`Cluster` |
+| `lbm` | D2Q9 流体の計算核(I/O なし) |
+| `guest` | WASM 側のヘルパー(`export_task!`) |
+| `examples/wasm-modules` | `hello-world`、`fibonacci`(別ワークスペース、`wasm32-unknown-unknown`) |
 
-Measured on one 20-core machine, loopback, 4 single-core client processes, 512×512, 300 steps
-(release build, includes 3 checkpoints of ~19 MB each), single-process reference 2.45 s:
+![クレートの依存関係](docs/img/crates.svg)
 
-| parts | server relay | direct |
-|---|---|---|
-| 1 | 3.19 s | 2.78 s |
-| 2 | 1.94 s | 1.89 s |
-| 4 | 1.62 s | 1.1–1.6 s (varies run to run) |
+## 複数台で使う(未検証)
 
-On loopback the gain from direct halos is small; the checkpoint snapshots still go to the server. The benefit should be
-larger with more parts and real networks, but **that was not measured**. Reproduce: `scripts/bench-lbm.sh 512 512 300`.
+サーバー側で `opencompute-server start` を実行してチケットを控え、各クライアントで `opencompute-client join --server <TICKET>` を実行します。UDP が通る必要があります。インターネット越しでは両側に `--relay` を付けますが、その場合は第三者(n0)のリレーと DNS サーバーに接続します。付けなければ、これらには接続しません。この構成は動作を確かめていません。
 
-## Persistence (Phase 3)
+## 安全性
 
-The server writes `<data-dir>/state.bin` (atomic replace, at most every ~100 ms when something changed) and
-`<data-dir>/modules/`. After a restart finished results are available, unfinished batch tasks are pending
-again, and stateful jobs resume from their last checkpoint when workers reconnect.
-`opencompute-server diag` shows counters (nodes lost, rollbacks, saves, restored jobs).
+- 相互認証: クライアントはチケットの公開鍵に接続し、サーバーはトークンを確認します。
+- WASM: `import` を持てません。メモリ・燃料(命令数)・実時間に上限があります。
+- 入力の検証: フレームの長さは確保の前に検査し、モジュールと入出力は BLAKE3 で確認します。古い試行の結果は捨てます。
+- 制御用ソケット(`control.sock`、権限 0600)は信頼する前提です。開ける人は誰でもジョブを投げられます。Unix のみです。
+- 悪意のあるクライアントが返す誤った結果は、見つけられません。
 
-## Across machines (LAN)
+詳細は [docs/06-safety.md](docs/06-safety.md) にあります。
 
-1. On the server machine: `opencompute-server start`. Copy the printed `ticket`.
-2. On each client machine: `opencompute-client join --server <TICKET>`; read the consent text, answer `y`.
+## できていないこと
 
-The ticket carries the server's addresses, its public key (the client dials *that key*, so the server
-cannot be impersonated) and a join token (the server rejects clients without it). UDP must be reachable
-(LAN: yes by default). Across the Internet add `--relay` on both sides: iroh then uses n0's public relay/DNS
-servers for NAT traversal – **this contacts third-party servers**, so it is opt-in. Without `--relay`
-no relay or n0 DNS server is contacted (iroh's UPnP/NAT-PMP port mapper on your own router may still run).
+- CPU 使用率(%)の制限は未実装です。制限できるのは並列数(コア数)とメモリです。
+- ネイティブコードの実行モードは未実装です。WASM と組み込み関数だけです。
+- 流体シミュレーションは D2Q9 のチャネル流れだけです。障害物や他の境界条件はありません。
+- 動作確認と性能測定は、1 台のマシンのループバック上だけです。直接通信の効果は、そこでは小さく出ました(512×512、300 ステップ、4 クライアントで、サーバー中継 1.62 秒に対し直接 1.1〜1.6 秒)。ネットワークをまたぐ環境での効果は未測定です。再現は `scripts/bench-lbm.sh 512 512 300` です。
+- NAT の内側の相手との直接通信は、つながらなければ 2 回の停滞(40 秒以上)のあとサーバー中継に切り替わります。
+- サーバー自身のワーカーには、直接モードの領域を割り当てません。
+- ステートフルな領域は、バッチ用のスロットに数えていません。両方を同時に流すと、コアを使いすぎることがあります。
+- ジョブと結果の状態は、サーバーが解放しません。メモリと `state.bin` が増え続けます。
+- キャンセルしても、実行中のタスクは中断しません。結果を捨てるだけです。
+- サーバーのアドレスは、`--bind` で固定しない限り再起動のたびに変わり、クライアントには新しいチケットが要ります。
+- Windows と macOS は未確認です。制御用ソケットが Unix 専用です。
 
-## Writing a compute module
-
-```rust
-// examples/wasm-modules/fibonacci/src/lib.rs   (crate-type = ["cdylib"])
-fn run(input: &[u8]) -> Vec<u8> {
-    let n: u64 = postcard::from_bytes(input).unwrap();
-    /* ... compute ... */
-    postcard::to_stdvec(&result).unwrap()
-}
-opencompute_guest::export_task!(run);
-```
-Build with `--target wasm32-unknown-unknown`. ABI: exports `memory`, `oc_alloc`, `oc_run`; imports nothing.
-Host side: `let out: Vec<u64> = cluster.map(&module, inputs).await?;` (inputs/outputs: any `serde` type, postcard).
-
-## Security model (what is and is not enforced)
-
-* Mutual auth: QUIC/TLS with Ed25519 node keys (iroh). Client pins the server key from the ticket; server checks the token (constant-time) and records the *authenticated* key as node id.
-* Consent: client never connects without an interactive `y` (or explicit `--yes`). Ctrl-C leaves gracefully.
-* Sandbox: WASM only, no WASI, no imports → no files/network/env/clock. Per-task limits: memory (additionally capped by the user's `--max-memory-mb` share), fuel, wall-clock. No OS command execution path exists.
-* Integrity: module bytes, task inputs and outputs are BLAKE3-verified; disk module cache is re-verified on load.
-* Untrusted input: frames are length-checked before allocation; join has a timeout; capability values validated; results from stale attempts are dropped.
-* **CPU limiting is parallelism-only** (rayon pool sized to `--cores`). It does not cap CPU *percentage*; that needs cgroups v2 / Job Objects / `nice`, not implemented.
-* The control socket (`<data-dir>/control.sock`, mode 0600) is trusted: anyone who can open it can submit jobs. Unix only.
-* A malicious client can return wrong results; there is no redundancy/verification yet (the design leaves room: `PlacementPolicy`, attempt tracking).
-
-## Not done / not verified
-
-* **Native execution mode**: not implemented (WASM and built-ins only).
-* **Direct halos** are tested on one machine only (loopback; the unreachable-peer fallback is tested by advertising bogus addresses). Peers behind NAT without `--relay` fall back to server relay after ~2 stalls (≥ 40 s lost). Delivery between peers is best effort; a lost halo is only repaired by the stall watchdog's rollback. Nodes without a peer address (the server's in-process worker) get no direct-mode parts.
-* **Re-partitioning** happens only via rollback to the last checkpoint (work since then is recomputed), at most when the worker count changes and ≥ 2 s after the previous (re)start. Only D2Q9 channel flow (walls top/bottom, periodic x, body force) exists – no obstacles or other boundary conditions.
-* Stateful strips are not accounted against the batch scheduler's slots (mixing both can oversubscribe cores).
-* Persistence rewrites the whole state file on change (fine for thousands of tasks, not millions); worker nodes are not persisted (they reconnect).
-* Performance numbers above are from one machine only; no multi-machine measurement exists.
-* Running tasks are not pre-empted on `CancelTask` (result is discarded; WASM still ends by its timeout/fuel). Built-in `sleep_square`/`prime_count` run to completion.
-* Tested only on one machine over loopback/LAN-interface addresses. **Multi-machine LAN, NAT traversal and `--relay` were not tested.**
-* Scheduler is FIFO + least-loaded; no speed/bandwidth/data-locality awareness yet.
-* Windows/macOS: client and server core should build, but the control socket is Unix-only; untested.
-* No hard cap yet on total module-store memory on the server. Job and result state is never freed (memory and `state.bin` grow with jobs).
-* Built-in tasks have no client-side time limit (only WASM does); built-ins are meant for trusted tests.
-* **Server restart**: jobs, results and checkpoints persist (see Persistence). The key and join token persist, but the UDP port is random unless you pass `--bind 0.0.0.0:<port>`; with a fixed port the old ticket keeps working and clients reconnect automatically (verified once, manually). Without it clients need the new ticket.
-* Reconnect is tested by `scripts/demo-local.sh` (SIGSTOP/SIGCONT freeze past the heartbeat timeout → server drops the node → client rejoins), not by a `cargo test`.
-
-## Development
+## 開発
 
 ```bash
 cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
+
+デモスクリプトは `scripts/` にあります(`demo-local.sh`、`demo-lbm-failure.sh`、`demo-restart.sh`、`demo-direct.sh`、`bench-lbm.sh`)。
