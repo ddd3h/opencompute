@@ -107,6 +107,20 @@ async fn handle(
             state.lock().modules.insert(h, Arc::new(bytes));
             R::ModuleStored(h)
         }
+        ControlRequest::UploadBlob(bytes) => {
+            if bytes.is_empty() || bytes.len() > MAX_BLOB_LEN {
+                return R::Error("blob empty or too large".into());
+            }
+            let h = ModuleHash::of(&bytes);
+            crate::persist::store_blob(&state.cfg.data_dir, &h, &bytes);
+            state.lock().blobs.insert(h, Arc::new(bytes));
+            R::BlobStored(h)
+        }
+        ControlRequest::ReleaseBlob(h) => {
+            state.lock().blobs.remove(&h);
+            crate::persist::remove_blob(&state.cfg.data_dir, &h);
+            R::Ok
+        }
         ControlRequest::Submit(s) => {
             if s.inputs.is_empty() || s.inputs.len() > MAX_TASKS_PER_JOB {
                 return R::Error("a job needs between 1 and 1,000,000 tasks".into());
@@ -118,6 +132,14 @@ async fn handle(
                 return R::Error("timeout_ms and max_attempts must be > 0".into());
             }
             let mut g = state.lock();
+            if let Some(h) = &s.shared {
+                if !matches!(s.kind, TaskKind::Wasm(_)) {
+                    return R::Error("a shared blob needs a WASM task".into());
+                }
+                if !g.blobs.contains_key(h) {
+                    return R::Error(format!("blob {h} not uploaded"));
+                }
+            }
             match &s.kind {
                 TaskKind::Wasm(h) if !g.modules.contains_key(h) => {
                     return R::Error(format!("module {h} not uploaded"));
@@ -129,6 +151,7 @@ async fn handle(
             }
             let id = g.sched.submit_job(opencompute_scheduler::JobSpec {
                 kind: s.kind,
+                shared: s.shared,
                 inputs: s.inputs,
                 timeout_ms: s.timeout_ms,
                 max_attempts: s.max_attempts,
@@ -200,6 +223,7 @@ async fn handle(
                 saves: g.saves,
                 restored_jobs: g.restored_jobs,
                 halos_relayed: g.halos_relayed,
+                blobs_sent: g.blobs_sent,
             })
         }
         ControlRequest::Cancel(j) => {

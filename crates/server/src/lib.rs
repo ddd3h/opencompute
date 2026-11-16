@@ -66,6 +66,8 @@ pub(crate) struct Inner {
     pub sched: Scheduler,
     conns: HashMap<NodeId, Conn>,
     pub modules: HashMap<ModuleHash, Arc<Vec<u8>>>,
+    /// Shared input blobs, by BLAKE3 of their content (also on disk under `blobs/`).
+    pub blobs: HashMap<ModuleHash, Arc<Vec<u8>>>,
     next_session: u64,
     pub(crate) stateful: std::collections::BTreeMap<JobId, stateful::SJob>,
     /// Revision of stateful/persisted data outside the scheduler.
@@ -75,6 +77,7 @@ pub(crate) struct Inner {
     pub(crate) saves: u64,
     pub(crate) restored_jobs: u32,
     pub(crate) halos_relayed: u64,
+    pub(crate) blobs_sent: u64,
     /// Serialised peer addresses of nodes (direct halo exchange).
     pub(crate) peer_addrs: HashMap<NodeId, Vec<u8>>,
 }
@@ -169,6 +172,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<ServerHandle> {
             sched: Scheduler::new(cfg.heartbeat_timeout.as_millis() as u64),
             conns: HashMap::new(),
             modules: HashMap::new(),
+            blobs: HashMap::new(),
             next_session: 1,
             stateful: Default::default(),
             srev: 0,
@@ -177,6 +181,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<ServerHandle> {
             saves: 0,
             restored_jobs: 0,
             halos_relayed: 0,
+            blobs_sent: 0,
             peer_addrs: HashMap::new(),
         }),
         wake: Notify::new(),
@@ -292,6 +297,7 @@ async fn dispatch_loop(state: Arc<State>) {
                 task_id: a.task_id,
                 attempt: a.attempt,
                 kind: a.kind,
+                shared: a.shared,
                 input_hash: digest(&a.input),
                 input: a.input.as_ref().clone(),
                 timeout_ms: a.timeout_ms,
@@ -476,6 +482,40 @@ where
                                 break;
                             }
                         }
+                    }
+                }
+            }
+            ClientMessage::BlobRequest(m) => {
+                let bytes = {
+                    let mut g = state.lock();
+                    let b = g.blobs.get(&m.hash).cloned();
+                    if b.is_some() {
+                        g.blobs_sent += 1;
+                    }
+                    b
+                };
+                match bytes {
+                    None => {
+                        let _ = out_tx.send(ServerMessage::BlobNotFound(m.hash)).await;
+                    }
+                    Some(b) => {
+                        // Send from a separate task so a slow link cannot stall this node's
+                        // heartbeat and result handling.
+                        let tx = out_tx.clone();
+                        tokio::spawn(async move {
+                            let total = b.len() as u64;
+                            for (i, chunk) in b.chunks(MODULE_CHUNK_LEN).enumerate() {
+                                let t = ModuleTransfer {
+                                    hash: m.hash,
+                                    total_len: total,
+                                    offset: (i * MODULE_CHUNK_LEN) as u64,
+                                    data: chunk.to_vec(),
+                                };
+                                if tx.send(ServerMessage::BlobTransfer(t)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
                     }
                 }
             }

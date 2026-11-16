@@ -23,6 +23,7 @@ fn nid(b: u8) -> NodeId {
 fn spec_with(n: usize, timeout_ms: u64, max_attempts: u32) -> JobSpec {
     JobSpec {
         kind: TaskKind::Builtin("test".into()),
+        shared: None,
         inputs: (0..n).map(|i| vec![i as u8]).collect(),
         timeout_ms,
         max_attempts,

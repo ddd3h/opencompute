@@ -22,6 +22,32 @@
 //! The only `unsafe` in the project lives in this macro: it is the FFI boundary that hands
 //! raw linear-memory pointers between host and guest.
 
+/// Split the host-composed input of a job with a shared blob into `(shared, task_input)`.
+/// Layout: `u64` little-endian shared length, shared bytes, task input.
+pub fn split_shared(buf: &[u8]) -> (&[u8], &[u8]) {
+    let Some((head, rest)) = buf.split_first_chunk::<8>() else {
+        return (&[], buf);
+    };
+    let n = u64::from_le_bytes(*head) as usize;
+    if n > rest.len() {
+        return (&[], &[]);
+    }
+    rest.split_at(n)
+}
+
+/// Like [`export_task!`] for jobs submitted with a shared blob:
+/// `$handler: fn(shared: &[u8], input: &[u8]) -> Vec<u8>`.
+#[macro_export]
+macro_rules! export_task_shared {
+    ($handler:path) => {
+        fn __oc_shared_adapter(buf: &[u8]) -> ::std::vec::Vec<u8> {
+            let (shared, input) = $crate::split_shared(buf);
+            $handler(shared, input)
+        }
+        $crate::export_task!(__oc_shared_adapter);
+    };
+}
+
 /// Export `$handler: fn(&[u8]) -> Vec<u8>` as the module's task entry point.
 #[macro_export]
 macro_rules! export_task {

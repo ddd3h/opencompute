@@ -7,14 +7,14 @@
 //! their last checkpoint once workers (re)connect. Worker nodes are not persisted: they reconnect.
 
 use crate::{State, stateful::SJob, stateful::SJobSnapshot};
-use opencompute_protocol::{MAX_MODULE_LEN, ModuleHash};
+use opencompute_protocol::{MAX_BLOB_LEN, MAX_MODULE_LEN, ModuleHash};
 use opencompute_scheduler::SchedulerSnapshot;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-const MAGIC: u32 = 0x4f43_5303;
+const MAGIC: u32 = 0x4f43_5304;
 
 #[derive(Serialize, Deserialize)]
 struct Persisted {
@@ -38,6 +38,24 @@ pub(crate) fn store_module(dir: &Path, h: &ModuleHash, bytes: &[u8]) {
     }
 }
 
+/// Store a shared blob (hash is the file name; written once).
+pub(crate) fn store_blob(dir: &Path, h: &ModuleHash, bytes: &[u8]) {
+    let d = dir.join("blobs");
+    let path = d.join(format!("{h}.bin"));
+    if path.exists() || std::fs::create_dir_all(&d).is_err() {
+        return;
+    }
+    let tmp = d.join(format!("{h}.tmp"));
+    if std::fs::write(&tmp, bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// Delete a stored blob file.
+pub(crate) fn remove_blob(dir: &Path, h: &ModuleHash) {
+    let _ = std::fs::remove_file(dir.join("blobs").join(format!("{h}.bin")));
+}
+
 /// Load state and modules from the data directory (best effort; corrupt files are reported, not fatal).
 pub(crate) fn load(state: &Arc<State>) {
     let dir = &state.cfg.data_dir;
@@ -52,6 +70,20 @@ pub(crate) fn load(state: &Arc<State>) {
                     g.modules.insert(h, Arc::new(b));
                 } else {
                     warn!("ignoring module file with wrong hash: {:?}", e.path());
+                }
+            }
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(dir.join("blobs")) {
+        for e in rd.flatten() {
+            if let Ok(b) = std::fs::read(e.path())
+                && b.len() <= MAX_BLOB_LEN
+            {
+                let h = ModuleHash::of(&b);
+                if e.file_name().to_string_lossy() == format!("{h}.bin") {
+                    g.blobs.insert(h, Arc::new(b));
+                } else {
+                    warn!("ignoring blob file with wrong hash: {:?}", e.path());
                 }
             }
         }

@@ -174,6 +174,61 @@ enum Done {
     Progress(PartProgress),
 }
 
+/// Byte-capped LRU of shared blobs. Running tasks keep their own `Arc`, so eviction is safe.
+struct BlobCache {
+    map: HashMap<ModuleHash, (Arc<Vec<u8>>, u64)>,
+    bytes: usize,
+    cap: usize,
+    tick: u64,
+}
+
+impl BlobCache {
+    fn new(cap: u64) -> Self {
+        Self {
+            map: HashMap::new(),
+            bytes: 0,
+            cap: cap.min(usize::MAX as u64) as usize,
+            tick: 0,
+        }
+    }
+
+    fn contains(&self, h: &ModuleHash) -> bool {
+        self.map.contains_key(h)
+    }
+
+    fn get(&mut self, h: &ModuleHash) -> Option<Arc<Vec<u8>>> {
+        self.tick += 1;
+        let t = self.tick;
+        self.map.get_mut(h).map(|e| {
+            e.1 = t;
+            e.0.clone()
+        })
+    }
+
+    /// Insert and evict least recently used blobs while over the cap (never the new one).
+    fn insert(&mut self, h: ModuleHash, b: Arc<Vec<u8>>) {
+        self.tick += 1;
+        self.bytes += b.len();
+        if let Some((old, _)) = self.map.insert(h, (b, self.tick)) {
+            self.bytes -= old.len();
+        }
+        while self.bytes > self.cap && self.map.len() > 1 {
+            let Some(victim) = self
+                .map
+                .iter()
+                .filter(|(k, _)| **k != h)
+                .min_by_key(|(_, v)| v.1)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            if let Some((old, _)) = self.map.remove(&victim) {
+                self.bytes -= old.len();
+            }
+        }
+    }
+}
+
 struct ModuleAssembly {
     total: u64,
     buf: Vec<u8>,
@@ -252,12 +307,47 @@ where
     let mut cancelled: std::collections::HashSet<(TaskId, u32)> = Default::default();
     let mut waiting_for_module: HashMap<ModuleHash, Vec<TaskAssignment>> = HashMap::new();
     let mut assembling: HashMap<ModuleHash, ModuleAssembly> = HashMap::new();
+    // Shared input blobs: cached by hash, fetched once per client.
+    let mut blobs = BlobCache::new(worker.caps.allowed_memory_bytes / 4);
+    let mut waiting_for_blob: HashMap<ModuleHash, Vec<TaskAssignment>> = HashMap::new();
+    let mut blob_assembling: HashMap<ModuleHash, ModuleAssembly> = HashMap::new();
     // Stateful parts: (job, part) -> (epoch, kernel).
     let mut parts: HashMap<(JobId, u32), (u32, SharedKernel)> = HashMap::new();
     // Direct-mode part actors; aborted when released, replaced, or the session ends.
     let mut actors: HashMap<(JobId, u32), AbortOnDrop> = HashMap::new();
     let mut ticker = tokio::time::interval(hb_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Route an assignment: wait for its module, then for its shared blob, then run it.
+    macro_rules! dispatch {
+        ($a:expr) => {{
+            let a: TaskAssignment = $a;
+            if a.shared.is_some() && !matches!(a.kind, TaskKind::Wasm(_)) {
+                send!(ClientMessage::TaskFailed(TaskFailed {
+                    task_id: a.task_id,
+                    attempt: a.attempt,
+                    error: "shared input needs a WASM task".into()
+                }));
+            } else if let Some(h) = worker.executor.missing_module(&a.kind) {
+                let first = !waiting_for_module.contains_key(&h);
+                waiting_for_module.entry(h).or_default().push(a);
+                if first {
+                    send!(ClientMessage::ModuleRequest(ModuleRequest { hash: h }));
+                }
+            } else if let Some(h) = a.shared.filter(|h| !blobs.contains(h)) {
+                let first = !waiting_for_blob.contains_key(&h);
+                waiting_for_blob.entry(h).or_default().push(a);
+                if first {
+                    send!(ClientMessage::BlobRequest(ModuleRequest { hash: h }));
+                }
+            } else {
+                let shared = a.shared.and_then(|h| blobs.get(&h));
+                let (task_id, attempt) = (a.task_id, a.attempt);
+                start_task(&worker, a, shared, &mut running, &done_tx);
+                send!(ClientMessage::TaskStarted(TaskStarted { task_id, attempt }));
+            }
+        }};
+    }
 
     let end = loop {
         tokio::select! {
@@ -315,17 +405,7 @@ where
                             send!(ClientMessage::TaskFailed(TaskFailed { task_id: a.task_id, attempt: a.attempt, error: "input corrupted or oversized".into() }));
                             continue;
                         }
-                        if let Some(h) = worker.executor.missing_module(&a.kind) {
-                            let first = !waiting_for_module.contains_key(&h);
-                            waiting_for_module.entry(h).or_default().push(a);
-                            if first {
-                                send!(ClientMessage::ModuleRequest(ModuleRequest { hash: h }));
-                            }
-                        } else {
-                            let (task_id, attempt) = (a.task_id, a.attempt);
-                            start_task(&worker, a, &mut running, &done_tx);
-                            send!(ClientMessage::TaskStarted(TaskStarted { task_id, attempt }));
-                        }
+                        dispatch!(a);
                     }
                     ServerMessage::ModuleTransfer(c) => {
                         let h = c.hash;
@@ -338,7 +418,7 @@ where
                             && asm.buf.len() + c.data.len() <= asm.total as usize;
                         if !ok {
                             assembling.remove(&h);
-                            fail_waiting(&mut waiting_for_module, h, "bad module transfer", &mut tx).await;
+                            fail_waiting(&mut waiting_for_module, "module", h, "bad module transfer", &mut tx).await;
                             continue;
                         }
                         asm.buf.extend_from_slice(&c.data);
@@ -348,24 +428,54 @@ where
                                 Ok(()) => {
                                     debug!(module = %h, "module loaded");
                                     for a in waiting_for_module.remove(&h).unwrap_or_default() {
-                                        let (task_id, attempt) = (a.task_id, a.attempt);
-                                        start_task(&worker, a, &mut running, &done_tx);
-                                        send!(ClientMessage::TaskStarted(TaskStarted { task_id, attempt }));
+                                        dispatch!(a);
                                     }
                                 }
-                                Err(e) => fail_waiting(&mut waiting_for_module, h, &e.to_string(), &mut tx).await,
+                                Err(e) => fail_waiting(&mut waiting_for_module, "module", h, &e.to_string(), &mut tx).await,
                             }
                         }
                     }
+                    ServerMessage::BlobTransfer(c) => {
+                        let h = c.hash;
+                        if !waiting_for_blob.contains_key(&h) { continue; }
+                        let asm = blob_assembling.entry(h).or_insert_with(|| ModuleAssembly { total: c.total_len, buf: Vec::new() });
+                        let ok = c.total_len == asm.total
+                            && c.total_len as usize <= MAX_BLOB_LEN
+                            && c.offset == asm.buf.len() as u64
+                            && c.data.len() <= MODULE_CHUNK_LEN
+                            && asm.buf.len() + c.data.len() <= asm.total as usize;
+                        if !ok {
+                            blob_assembling.remove(&h);
+                            fail_waiting(&mut waiting_for_blob, "blob", h, "bad blob transfer", &mut tx).await;
+                            continue;
+                        }
+                        asm.buf.extend_from_slice(&c.data);
+                        if asm.buf.len() as u64 == asm.total {
+                            let bytes = blob_assembling.remove(&h).expect("present").buf;
+                            if ModuleHash::of(&bytes) != h {
+                                fail_waiting(&mut waiting_for_blob, "blob", h, "hash mismatch", &mut tx).await;
+                                continue;
+                            }
+                            blobs.insert(h, Arc::new(bytes));
+                            debug!(blob = %h, "blob cached");
+                            for a in waiting_for_blob.remove(&h).unwrap_or_default() {
+                                dispatch!(a);
+                            }
+                        }
+                    }
+                    ServerMessage::BlobNotFound(h) => {
+                        blob_assembling.remove(&h);
+                        fail_waiting(&mut waiting_for_blob, "blob", h, "not found on server", &mut tx).await;
+                    }
                     ServerMessage::ModuleNotFound(h) => {
                         assembling.remove(&h);
-                        fail_waiting(&mut waiting_for_module, h, "module not found on server", &mut tx).await;
+                        fail_waiting(&mut waiting_for_module, "module", h, "module not found on server", &mut tx).await;
                     }
                     ServerMessage::CancelTask(c) => {
                         if running.get(&c.task_id) == Some(&c.attempt) {
                             cancelled.insert((c.task_id, c.attempt));
                         }
-                        for list in waiting_for_module.values_mut() {
+                        for list in waiting_for_module.values_mut().chain(waiting_for_blob.values_mut()) {
                             list.retain(|a| !(a.task_id == c.task_id && a.attempt == c.attempt));
                         }
                     }
@@ -465,6 +575,7 @@ pub fn blake3_concat(lo: &[u8], hi: &[u8]) -> [u8; 32] {
 
 async fn fail_waiting<W: AsyncWrite + Unpin>(
     waiting: &mut HashMap<ModuleHash, Vec<TaskAssignment>>,
+    what: &str,
     h: ModuleHash,
     why: &str,
     tx: &mut W,
@@ -475,7 +586,7 @@ async fn fail_waiting<W: AsyncWrite + Unpin>(
             &ClientMessage::TaskFailed(TaskFailed {
                 task_id: a.task_id,
                 attempt: a.attempt,
-                error: format!("module {h}: {why}"),
+                error: format!("{what} {h}: {why}"),
             }),
             MAX_STATE_FRAME_LEN,
         )
@@ -487,6 +598,7 @@ async fn fail_waiting<W: AsyncWrite + Unpin>(
 fn start_task(
     worker: &Arc<Worker>,
     a: TaskAssignment,
+    shared: Option<Arc<Vec<u8>>>,
     running: &mut HashMap<TaskId, u32>,
     done: &mpsc::UnboundedSender<Done>,
 ) {
@@ -502,7 +614,17 @@ fn start_task(
         let t0 = Instant::now();
         // A panic inside a task must not take the worker down.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            w.executor.execute(&a.kind, &a.input, &limits, timeout)
+            match &shared {
+                // Guest input = u64 LE shared length, shared bytes, task input.
+                Some(s) => {
+                    let mut buf = Vec::with_capacity(8 + s.len() + a.input.len());
+                    buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                    buf.extend_from_slice(s);
+                    buf.extend_from_slice(&a.input);
+                    w.executor.execute(&a.kind, &buf, &limits, timeout)
+                }
+                None => w.executor.execute(&a.kind, &a.input, &limits, timeout),
+            }
         }));
         let msg = match r {
             Ok(Ok(output)) if output.len() <= MAX_PAYLOAD_LEN => Done::Result(TaskResult {

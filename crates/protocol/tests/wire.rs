@@ -198,6 +198,7 @@ fn postcard_roundtrip_server_messages() {
                 attempt: 1,
                 kind: TaskKind::Wasm(hash),
                 input: vec![4, 5, 6],
+                shared: None,
                 input_hash: digest(&[4, 5, 6]),
                 timeout_ms: 30_000,
                 limits: ExecLimits {
@@ -288,6 +289,7 @@ fn postcard_roundtrip_control_requests() {
             "Submit",
             ControlRequest::Submit(SubmitJob {
                 kind: TaskKind::Builtin("prime_count".into()),
+                shared: None,
                 inputs: vec![vec![1], vec![]],
                 timeout_ms: 60_000,
                 max_attempts: 3,
@@ -396,6 +398,7 @@ fn postcard_roundtrip_control_responses() {
             "Diag",
             ControlResponse::Diag(ServerStats {
                 halos_relayed: 0,
+                blobs_sent: 3,
                 uptime_s: 3_600,
                 nodes: 2,
                 jobs: 5,
@@ -449,6 +452,7 @@ async fn frames_roundtrip_through_codec() {
             attempt: 0,
             kind: TaskKind::Builtin("sleep_square".into()),
             input: vec![1; 10],
+            shared: None,
             input_hash: digest(&[1; 10]),
             timeout_ms: 1_000,
             limits: ExecLimits::default(),

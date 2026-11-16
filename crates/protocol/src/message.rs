@@ -164,6 +164,9 @@ pub struct TaskAssignment {
     pub attempt: u32,
     /// What to run.
     pub kind: TaskKind,
+    /// Shared input blob (hash). The worker fetches it once and caches it; the guest receives it
+    /// together with `input` (see `opencompute-guest::export_task_shared!`). WASM tasks only.
+    pub shared: Option<ModuleHash>,
     /// Input bytes.
     pub input: Vec<u8>,
     /// BLAKE3 of `input`, verified by the worker.
@@ -364,6 +367,8 @@ pub enum ClientMessage {
     PartFailed(PartFailed),
     /// Stateful job (direct mode): progress / snapshot.
     PartProgress(PartProgress),
+    /// Fetch a shared input blob (added in v5).
+    BlobRequest(ModuleRequest),
 }
 
 /// Messages sent by the server to a client.
@@ -395,4 +400,8 @@ pub enum ServerMessage {
     PartStep(PartStep),
     /// Stateful job: drop state.
     PartRelease(PartRelease),
+    /// Shared input blob chunk, same framing as `ModuleTransfer` (added in v5).
+    BlobTransfer(ModuleTransfer),
+    /// Requested blob unknown: never uploaded or released (added in v5).
+    BlobNotFound(ModuleHash),
 }

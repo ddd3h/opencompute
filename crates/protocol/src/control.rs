@@ -39,6 +39,10 @@ pub enum ControlRequest {
     },
     /// Server counters.
     Diag,
+    /// Store a shared input blob; tasks reference it by hash (`SubmitJob::shared`). Added in v5.
+    UploadBlob(Vec<u8>),
+    /// Forget a blob (call after the jobs using it are done; pending tasks would fail). Added in v5.
+    ReleaseBlob(ModuleHash),
 }
 
 /// Stateful job submission: parts form a chain; neighbours exchange boundary data every step.
@@ -110,6 +114,8 @@ pub struct ServerStats {
     pub restored_jobs: u32,
     /// Halo blobs relayed through the server (0 when everything runs direct).
     pub halos_relayed: u64,
+    /// Shared blobs sent to workers (one per worker per blob when caching works).
+    pub blobs_sent: u64,
 }
 
 /// Job submission.
@@ -117,6 +123,8 @@ pub struct ServerStats {
 pub struct SubmitJob {
     /// Execution kind, shared by all tasks.
     pub kind: TaskKind,
+    /// Shared blob given to every task (uploaded earlier with `UploadBlob`). WASM only.
+    pub shared: Option<ModuleHash>,
     /// One input per task.
     pub inputs: Vec<Vec<u8>>,
     /// Per-task wall-clock timeout.
@@ -167,6 +175,8 @@ pub enum ControlResponse {
     Diag(ServerStats),
     /// Generic OK.
     Ok,
+    /// Blob stored (its hash). Added in v5.
+    BlobStored(ModuleHash),
 }
 
 /// Server identity.

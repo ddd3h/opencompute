@@ -210,6 +210,89 @@ async fn wasm_module_is_transferred_executed_and_sandboxed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shared_blob_is_fetched_once_per_worker_and_survives_restart() {
+    let dir = tmp("shared");
+    let srv = server_in(dir.clone(), 1).await;
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    let _c = client("S", 2, &srv.ticket);
+    wait_nodes(&cluster, 2).await;
+    let echo = cluster
+        .upload_module(wat::parse_str(ECHO_WAT).unwrap())
+        .await
+        .unwrap();
+
+    let shared: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+    // More tasks than slots, so assignments trickle in while the blob is already cached.
+    let inputs: Vec<Vec<u8>> = (0..40u8).map(|i| vec![i; 3]).collect();
+    let blob = cluster.upload_blob(shared.clone()).await.unwrap();
+    let job = cluster
+        .submit_raw_shared(
+            TaskKind::Wasm(echo.hash),
+            Some(blob),
+            inputs.clone(),
+            &JobOptions::default(),
+        )
+        .await
+        .unwrap();
+    let out = cluster
+        .wait_raw(job, Duration::from_secs(30))
+        .await
+        .unwrap();
+    for (i, o) in out.iter().enumerate() {
+        // The echo guest returns what the host composed: u64 LE length, blob, task input.
+        let mut want = (shared.len() as u64).to_le_bytes().to_vec();
+        want.extend_from_slice(&shared);
+        want.extend_from_slice(&inputs[i]);
+        assert_eq!(o.as_ref().unwrap(), &want, "task {i}");
+    }
+    let sent = cluster.diag().await.unwrap().blobs_sent;
+    assert!(sent <= 2, "one fetch per worker, got {sent}");
+
+    // A job must not reference a blob that was never uploaded or was released.
+    cluster.release_blob(blob).await.unwrap();
+    let r = cluster
+        .submit_raw_shared(
+            TaskKind::Wasm(echo.hash),
+            Some(blob),
+            vec![vec![1]],
+            &JobOptions::default(),
+        )
+        .await;
+    assert!(r.is_err(), "released blob must be refused");
+    // Shared blobs need a WASM task.
+    let b2 = cluster.upload_blob(shared.clone()).await.unwrap();
+    let r = cluster
+        .submit_raw_shared(
+            TaskKind::Builtin("prime_count".into()),
+            Some(b2),
+            vec![vec![1]],
+            &JobOptions::default(),
+        )
+        .await;
+    assert!(r.is_err(), "builtin tasks cannot take a shared blob");
+    srv.shutdown().await;
+
+    // Restart: the blob is still there.
+    let srv = server_in(dir, 1).await;
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    let job = cluster
+        .submit_raw_shared(
+            TaskKind::Wasm(echo.hash),
+            Some(b2),
+            vec![vec![9]],
+            &JobOptions::default(),
+        )
+        .await
+        .unwrap();
+    let out = cluster
+        .wait_raw(job, Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert!(out[0].as_ref().unwrap().len() > shared.len());
+    srv.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unknown_module_is_refused_at_submit() {
     let srv = server("nomod", 1).await;
     let cluster = Cluster::connect(&srv.control_path).await.unwrap();

@@ -4,8 +4,8 @@
 //! (cd examples/wasm-modules && cargo build --release --target wasm32-unknown-unknown)
 //! cargo run --release -p opencompute-compute-api --example nbody_batch -- [N STEPS BLOCKS]
 //! ```
-//! Each step ships all positions to every block (`3 * N * 8` bytes per task, at most 2 MiB, so
-//! `N <= 87_000`) and gets the accelerations of one block of particles back. Leapfrog
+//! Each step uploads all positions once as a shared blob, so every worker fetches them once, and
+//! sends one small task per block of particles, which returns that block's accelerations. Leapfrog
 //! (kick-drift-kick) integration runs here. The result is compared bit for bit with the same
 //! integration done in this process, and the wall times are printed.
 use opencompute::Cluster;
@@ -16,8 +16,7 @@ use std::time::Instant;
 mod force;
 
 #[derive(Serialize)]
-struct Block<'a> {
-    pos: &'a [f64],
+struct Range {
     start: u32,
     end: u32,
     eps2: f64,
@@ -75,10 +74,6 @@ async fn main() -> Result<(), opencompute::Error> {
     };
     let (n, steps, blocks) = (arg(1, 4096), arg(2, 10), arg(3, 16));
     let (eps2, dt) = (0.05f64 * 0.05, 0.01f64);
-    assert!(
-        n * 24 < (2 << 20) - 64,
-        "positions must fit one task input (2 MiB)"
-    );
     let cluster = Cluster::connect_default().await?;
     let module = cluster
         .load_module("examples/wasm-modules/target/wasm32-unknown-unknown/release/nbody.wasm")
@@ -93,16 +88,16 @@ async fn main() -> Result<(), opencompute::Error> {
     let t0 = Instant::now();
     let mut acc = vec![0.0; 3 * n];
     let force_eval = async |pos: &[f64], acc: &mut Vec<f64>| -> Result<(), opencompute::Error> {
-        let inputs: Vec<Block> = ranges
+        let blob: Vec<u8> = pos.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let inputs: Vec<Range> = ranges
             .iter()
-            .map(|&(a, b)| Block {
-                pos,
+            .map(|&(a, b)| Range {
                 start: a as u32,
                 end: b as u32,
                 eps2,
             })
             .collect();
-        let parts: Vec<Vec<f64>> = cluster.map(&module, inputs).await?;
+        let parts: Vec<Vec<f64>> = cluster.map_shared(&module, blob, inputs).await?;
         acc.clear();
         acc.extend(parts.into_iter().flatten());
         Ok(())

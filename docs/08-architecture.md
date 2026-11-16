@@ -625,7 +625,7 @@ Persisted {
 
 `SJobSnapshot` は id、kernel、part ごとの params、steps、`ck_every`、`checkpoint: Option<(step, Vec<Vec<u8>>)>`、`rollbacks`、`final_state`、`failed`、`direct`、`parts_per_node`、`repartitions` を保持する。
 
-magic は v3 の永続化形式で `0x4f43_5301` から `0x4f43_5302` に上がり（`direct` / `parts_per_node` / `repartitions` の追加）、v4 で `0x4f43_5303` に上がった（`halo_req` / `halo_depth` / `retunes` の追加）。**旧 magic のファイルは「未知の形式」として無視され、空の状態で起動する**（マイグレーションは無い）。epoch・`step`・`placement`・`progress`・`pending`・`last_target`・`direct_failures` は保存しない。
+magic は v3 の永続化形式で `0x4f43_5301` から `0x4f43_5302` に上がり（`direct` / `parts_per_node` / `repartitions` の追加）、v4 で `0x4f43_5303` に上がり（`halo_req` / `halo_depth` / `retunes` の追加）、v5 で `0x4f43_5304` に上がった（タスクの `shared` の追加）。**旧 magic のファイルは「未知の形式」として無視され、空の状態で起動する**（マイグレーションは無い）。epoch・`step`・`placement`・`progress`・`pending`・`last_target`・`direct_failures` は保存しない。
 
 ### 7.3 保存
 

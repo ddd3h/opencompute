@@ -185,6 +185,23 @@ impl Cluster {
         self.upload_module(tokio::fs::read(path).await?).await
     }
 
+    /// Store a shared input blob on the server. Jobs that pass its hash to
+    /// [`Cluster::submit_raw_shared`] send it to each worker once instead of once per task.
+    pub async fn upload_blob(&self, bytes: Vec<u8>) -> Result<ModuleHash, Error> {
+        match self.request(ControlRequest::UploadBlob(bytes)).await? {
+            ControlResponse::BlobStored(h) => Ok(h),
+            _ => Err(Error::Protocol),
+        }
+    }
+
+    /// Forget a blob once the jobs using it are done.
+    pub async fn release_blob(&self, hash: ModuleHash) -> Result<(), Error> {
+        match self.request(ControlRequest::ReleaseBlob(hash)).await? {
+            ControlResponse::Ok => Ok(()),
+            _ => Err(Error::Protocol),
+        }
+    }
+
     /// Submit a job without waiting. Inputs are raw bytes.
     pub async fn submit_raw(
         &self,
@@ -192,8 +209,21 @@ impl Cluster {
         inputs: Vec<Vec<u8>>,
         o: &JobOptions,
     ) -> Result<JobId, Error> {
+        self.submit_raw_shared(kind, None, inputs, o).await
+    }
+
+    /// Like [`Cluster::submit_raw`]; every task also receives the blob `shared` (WASM only; the
+    /// guest uses `opencompute_guest::export_task_shared!`).
+    pub async fn submit_raw_shared(
+        &self,
+        kind: TaskKind,
+        shared: Option<ModuleHash>,
+        inputs: Vec<Vec<u8>>,
+        o: &JobOptions,
+    ) -> Result<JobId, Error> {
         let req = ControlRequest::Submit(SubmitJob {
             kind,
+            shared,
             inputs,
             timeout_ms: o.task_timeout.as_millis() as u64,
             max_attempts: o.max_attempts,
@@ -264,6 +294,46 @@ impl Cluster {
         let results = self.wait_raw(job, o.wait).await?;
         results
             .into_iter()
+            .enumerate()
+            .map(|(i, r)| match r {
+                Ok(b) => postcard::from_bytes(&b).map_err(|e| Error::Decode(i, e.to_string())),
+                Err(message) => Err(Error::TaskFailed { index: i, message }),
+            })
+            .collect()
+    }
+
+    /// Run one WASM task per input, all of them reading the same `shared` data.
+    ///
+    /// The shared bytes (raw, not postcard) are stored on the server once and sent to each worker
+    /// once, however many tasks it runs. The guest uses `opencompute_guest::export_task_shared!`.
+    /// The blob is released when the job ends.
+    pub async fn map_shared<I, O>(
+        &self,
+        module: &Module,
+        shared: Vec<u8>,
+        inputs: Vec<I>,
+    ) -> Result<Vec<O>, Error>
+    where
+        I: Serialize,
+        O: DeserializeOwned,
+    {
+        let o = JobOptions::default();
+        let raw: Vec<Vec<u8>> = inputs
+            .iter()
+            .map(|i| {
+                postcard::to_stdvec(i).map_err(|e| Error::Server(format!("encode input: {e}")))
+            })
+            .collect::<Result<_, _>>()?;
+        let blob = self.upload_blob(shared).await?;
+        let res = async {
+            let job = self
+                .submit_raw_shared(TaskKind::Wasm(module.hash), Some(blob), raw, &o)
+                .await?;
+            self.wait_raw(job, o.wait).await
+        }
+        .await;
+        let _ = self.release_blob(blob).await;
+        res?.into_iter()
             .enumerate()
             .map(|(i, r)| match r {
                 Ok(b) => postcard::from_bytes(&b).map_err(|e| Error::Decode(i, e.to_string())),

@@ -8,7 +8,9 @@
 //! * Node loss does not consume a task's failure budget; failures and timeouts do.
 
 use opencompute_protocol::control::JobInfo;
-use opencompute_protocol::{ExecLimits, JobId, NodeCapabilities, NodeId, TaskId, TaskKind};
+use opencompute_protocol::{
+    ExecLimits, JobId, ModuleHash, NodeCapabilities, NodeId, TaskId, TaskKind,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -45,6 +47,8 @@ pub type TaskOutcome = Result<Vec<u8>, String>;
 pub struct JobSpec {
     /// Kind shared by all tasks.
     pub kind: TaskKind,
+    /// Shared blob hash for every task.
+    pub shared: Option<ModuleHash>,
     /// One input per task.
     pub inputs: Vec<Vec<u8>>,
     /// Per-attempt wall-clock timeout.
@@ -68,6 +72,8 @@ pub struct Assignment {
     pub attempt: u32,
     /// Kind.
     pub kind: TaskKind,
+    /// Shared blob.
+    pub shared: Option<ModuleHash>,
     /// Input.
     pub input: Arc<Vec<u8>>,
     /// Timeout.
@@ -131,6 +137,7 @@ impl PlacementPolicy for LeastLoaded {
 struct Task {
     job: JobId,
     kind: TaskKind,
+    shared: Option<ModuleHash>,
     input: Arc<Vec<u8>>,
     timeout_ms: u64,
     limits: ExecLimits,
@@ -208,6 +215,8 @@ pub struct TaskSnapshot {
     pub job: JobId,
     /// Kind.
     pub kind: TaskKind,
+    /// Shared blob.
+    pub shared: Option<ModuleHash>,
     /// Input.
     pub input: Vec<u8>,
     /// Timeout.
@@ -362,6 +371,7 @@ impl Scheduler {
                 Task {
                     job: job_id,
                     kind: spec.kind.clone(),
+                    shared: spec.shared,
                     input: Arc::new(input),
                     timeout_ms: spec.timeout_ms,
                     limits: spec.limits,
@@ -476,6 +486,7 @@ impl Scheduler {
                 task_id,
                 attempt: task.attempt,
                 kind: task.kind.clone(),
+                shared: task.shared,
                 input: task.input.clone(),
                 timeout_ms: task.timeout_ms,
                 limits: task.limits,
@@ -616,6 +627,7 @@ impl Scheduler {
                 id: *id,
                 job: t.job,
                 kind: t.kind.clone(),
+                shared: t.shared,
                 input: t.input.as_ref().clone(),
                 timeout_ms: t.timeout_ms,
                 limits: t.limits,
@@ -668,6 +680,7 @@ impl Scheduler {
                 Task {
                     job: t.job,
                     kind: t.kind,
+                    shared: t.shared,
                     input: Arc::new(t.input),
                     timeout_ms: t.timeout_ms,
                     limits: t.limits,
@@ -765,6 +778,7 @@ mod tests {
     fn spec(n: usize) -> JobSpec {
         JobSpec {
             kind: TaskKind::Builtin("x".into()),
+            shared: None,
             inputs: (0..n).map(|i| vec![i as u8]).collect(),
             timeout_ms: 1000,
             max_attempts: 3,

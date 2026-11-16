@@ -89,6 +89,7 @@ fn assignment(kind: TaskKind, input: &[u8], input_hash: [u8; 32], task: u64) -> 
         attempt: 0,
         kind,
         input: input.to_vec(),
+        shared: None,
         input_hash,
         timeout_ms: 5_000,
         limits: ExecLimits::default(),

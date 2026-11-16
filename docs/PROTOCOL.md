@@ -21,7 +21,7 @@ socket. The authoritative definitions live in:
 ## 1. Versions and transport
 
 * **Protocol version:** `PROTOCOL_VERSION = 4` (`u16`).
-* **Worker ALPN:** `opencompute/4` (`b"opencompute/4"`), negotiated by QUIC between a client and
+* **Worker ALPN:** `opencompute/5` (`b"opencompute/5"`), negotiated by QUIC between a client and
   the server.
 * **Peer ALPN:** `opencompute-peer/1` (`b"opencompute-peer/1"`), negotiated by QUIC between two
   clients for direct halo exchange. It has no version field on the wire; its version is the ALPN
@@ -145,7 +145,7 @@ the connection/session is ended. See §7.
 ```
 client                                              server
   |                                                    |
-  |-- QUIC connect, ALPN "opencompute/4" ------------->|  (mutual TLS; server records remote NodeId)
+  |-- QUIC connect, ALPN "opencompute/5" ------------->|  (mutual TLS; server records remote NodeId)
   |-- open bidirectional stream ---------------------->|
   |-- ClientMessage::Join(JoinRequest) -------------->|  (server waits at most 10 s, max 4 MiB)
   |                                                    |  validate version, token, capabilities, peer_addr
@@ -156,7 +156,7 @@ client                                              server
   |<-- Assign / CancelTask / ModuleTransfer / ... -----|
 ```
 
-1. **Connect.** The client dials the EndpointId from the ticket with ALPN `opencompute/4` and opens
+1. **Connect.** The client dials the EndpointId from the ticket with ALPN `opencompute/5` and opens
    one bidirectional stream. The server accepts the stream and derives the peer `NodeId` from the
    authenticated QUIC identity.
 2. **Join.** The client must send `ClientMessage::Join` as the **first frame**. The server reads it
@@ -277,6 +277,7 @@ These indices are part of the wire format.
 | 8 | `PartBoundary(PartBoundary)` |
 | 9 | `PartFailed(PartFailed)` |
 | 10 | `PartProgress(PartProgress)` |
+| 11 | `BlobRequest(ModuleRequest)` |
 
 `ServerMessage`:
 
@@ -292,6 +293,8 @@ These indices are part of the wire format.
 | 7 | `PartInit(PartInit)` |
 | 8 | `PartStep(PartStep)` |
 | 9 | `PartRelease(PartRelease)` |
+| 10 | `BlobTransfer(ModuleTransfer)` |
+| 11 | `BlobNotFound(ModuleHash)` |
 
 `PeerMessage` (client↔client, ALPN `opencompute-peer/1`):
 
@@ -462,6 +465,7 @@ rejection. Reason strings are informational and may change.
 | `task_id` | `TaskId` | Task identity. |
 | `attempt` | `u32` | Attempt counter, starting at 1 and incremented on every dispatch. |
 | `kind` | `TaskKind` | Built-in or WASM module. |
+| `shared` | `Option<ModuleHash>` | Shared input blob (v5). WASM tasks only. |
 | `input` | `Vec<u8>` | Task input; at most `MAX_PAYLOAD_LEN`. |
 | `input_hash` | `[u8; 32]` | BLAKE3-256 of `input`. |
 | `timeout_ms` | `u64` | Wall-clock budget. |
@@ -469,7 +473,7 @@ rejection. Reason strings are informational and may change.
 
 The worker verifies the input size and hash before starting; a mismatch produces `TaskFailed`
 (`input corrupted or oversized`). If the WASM module is missing, the assignment waits for a module
-transfer. `Assign` and `CancelTask` share one ordered stream, so their relative order is preserved.
+transfer, then for its shared blob (`BlobRequest` → `BlobTransfer` chunks, verified against the hash, cached per worker). The guest input is then `u64` little-endian shared length, shared bytes, task input. `Assign` and `CancelTask` share one ordered stream, so their relative order is preserved.
 
 #### `ModuleTransfer` (variant 3)
 
@@ -939,12 +943,15 @@ protocol and has no authentication beyond file-system permissions.
 | 8 | `SubmitStateful(SubmitStateful)` | Submits a stateful chain job. |
 | 9 | `StatefulResult { job, wait_ms }` | Waits up to `wait_ms` for a stateful job. |
 | 10 | `Diag` | Returns server counters. |
+| 11 | `UploadBlob(Vec<u8>)` | Stores a shared input blob in memory and under `blobs/`. Empty or `> MAX_BLOB_LEN` (128 MiB) → `Error`. Returns `BlobStored(hash)`. (v5) |
+| 12 | `ReleaseBlob(ModuleHash)` | Forgets a blob; tasks still waiting for it fail. Returns `Ok`. (v5) |
 
 `SubmitJob`:
 
 | Field | Type | Semantics |
 |---|---|---|
 | `kind` | `TaskKind` | Shared by all tasks. |
+| `shared` | `Option<ModuleHash>` | Blob uploaded earlier with `UploadBlob`, given to every task (v5). WASM only. |
 | `inputs` | `Vec<Vec<u8>>` | One input per task, in submission order. |
 | `timeout_ms` | `u64` | Per-task wall-clock budget. |
 | `max_attempts` | `u32` | Maximum counted failures per task. |
@@ -955,6 +962,7 @@ protocol and has no authentication beyond file-system permissions.
 * `1 <= inputs.len() <= 1_000_000` and every input `<= MAX_PAYLOAD_LEN`;
 * `timeout_ms > 0` and `max_attempts > 0`;
 * a `Wasm(hash)` module must already have been uploaded to this server;
+* a `shared` blob must have been uploaded and `kind` must be `Wasm`;
 * a `Builtin(name)` name must be non-empty and at most 64 bytes.
 
 Submission creates a new job every time; there is **no idempotency key**, so retrying a `Submit`
@@ -992,8 +1000,9 @@ support re-partitioning).
 | 7 | `Results { job: JobInfo, results }` | `results` is per task in submission order: `None` until finished, `Some(Ok(bytes))` on success, `Some(Err(message))` on failure/cancel. |
 | 8 | `StatefulSubmitted(JobId)` | Accepted stateful job. |
 | 9 | `Stateful { info, final_state, final_params }` | See below. |
-| 10 | `Diag(ServerStats)` | `uptime_s`, `nodes`, `jobs`, `nodes_lost`, `rollbacks`, `saves`, `restored_jobs`, `halos_relayed`. |
-| 11 | `Ok` | Generic success (used by `Cancel`). |
+| 10 | `Diag(ServerStats)` | `uptime_s`, `nodes`, `jobs`, `nodes_lost`, `rollbacks`, `saves`, `restored_jobs`, `halos_relayed`, `blobs_sent`. |
+| 11 | `Ok` | Generic success (used by `Cancel`, `ReleaseBlob`). |
+| 12 | `BlobStored(ModuleHash)` | Hash of the stored blob. (v5) |
 
 `StatefulInfo`:
 
@@ -1087,7 +1096,7 @@ codec ever disagree, that test fails.
 
 ## 11. Changing the protocol
 
-* `PROTOCOL_VERSION` and `ALPN` are both `4` / `opencompute/4`. An incompatible change must bump
+* `PROTOCOL_VERSION` and `ALPN` are both `5` / `opencompute/5`. An incompatible change must bump
   both (and the ALPN string), because peers with different ALPNs never reach the application
   handshake. The worker protocol and the peer protocol are versioned separately: peer streams use
   `opencompute-peer/1`, and `PeerMessage` has no version field of its own.
@@ -1119,3 +1128,19 @@ job). Files with the old magic are ignored.
 
 The server clamps the depth of every edge to the smaller row count of the two parts it joins.
 In relay mode (`direct = false`) the depth is always 1 and `edge_depths` is empty.
+
+## 12. Changes in protocol version 5 (shared input blobs)
+
+Version 5 lets all tasks of a job read the same large input without sending it once per task.
+New enum variants were appended (existing indices are unchanged); `TaskAssignment` and `SubmitJob`
+gained a field, so the version and ALPN were bumped.
+
+* `UploadBlob` / `ReleaseBlob` / `BlobStored` (control), `BlobRequest` / `BlobTransfer` /
+  `BlobNotFound` (worker). Blobs are identified by BLAKE3 and limited to `MAX_BLOB_LEN` (128 MiB);
+  chunks are `MODULE_CHUNK_LEN`.
+* The server serves a blob from a separate task, so a slow link does not delay that node's
+  heartbeats and results. A worker fetches each blob once and keeps it in a cache of at most a
+  quarter of its memory budget (least recently used blobs are dropped first).
+* `ServerStats.blobs_sent` counts blobs served.
+* `state.bin` magic changed to `0x4f43_5304` (`TaskSnapshot.shared`). Blob bytes are not in
+  `state.bin`; they are files `blobs/<hash>.bin`.
