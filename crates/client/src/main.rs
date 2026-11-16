@@ -44,6 +44,9 @@ enum Cmd {
         /// Use n0 relay servers + DNS for NAT traversal over the Internet (contacts third-party servers).
         #[arg(long)]
         relay: bool,
+        /// Dial the server at this UDP address instead of the ones in the ticket (for tunnels).
+        #[arg(long)]
+        connect_addr: Option<std::net::SocketAddr>,
         /// Skip the interactive consent prompt (only for scripts/tests; you still consent by running this).
         #[arg(long)]
         yes: bool,
@@ -94,10 +97,15 @@ async fn main() -> Result<()> {
             name,
             data_dir,
             relay,
+            connect_addr,
             yes,
             emulate_halo_latency_ms,
         } => {
-            let ticket = Ticket::decode(&server).context("invalid --server ticket")?;
+            let mut ticket = Ticket::decode(&server).context("invalid --server ticket")?;
+            let tunnelled = connect_addr.is_some();
+            if let Some(a) = connect_addr {
+                ticket = ticket.with_direct_addr(a);
+            }
             let dir = data_dir.unwrap_or_else(default_dir);
             let sk = load_or_create_secret(&dir.join("node.key"))?;
             let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "node".into());
@@ -112,6 +120,11 @@ async fn main() -> Result<()> {
                 cfg.allowed_memory_bytes = m << 20;
             }
             cfg.cache_dir = Some(dir.clone());
+            if tunnelled {
+                // Other clients cannot reach this machine directly: advertise no peer address,
+                // so the server sends everything itself (no peer forwarding, relayed halos).
+                cfg.peer_addr_override = Some(Vec::new());
+            }
             cfg.network.relay = relay;
             cfg.emulated_halo_latency = std::time::Duration::from_millis(emulate_halo_latency_ms);
             let caps = cfg.capabilities();

@@ -1144,3 +1144,14 @@ gained a field, so the version and ALPN were bumped.
 * `ServerStats.blobs_sent` counts blobs served.
 * `state.bin` magic changed to `0x4f43_5304` (`TaskSnapshot.shared`). Blob bytes are not in
   `state.bin`; they are files `blobs/<hash>.bin`.
+
+## 13. Reaching a server only over TCP (ssh tunnel)
+
+A client that cannot send UDP to the server (no IPv6, no VPN, only ssh) can still join:
+run `scripts/udp_tcp_bridge.py serve 17777 <server-ip> <server-port>` next to the server,
+forward it with `ssh -R 127.0.0.1:17777:127.0.0.1:17777 <client-host>`, run
+`scripts/udp_tcp_bridge.py client 18777 17777` on the client host, and start the client with
+`join --connect-addr 127.0.0.1:18777 ...`. `--connect-addr` replaces the addresses in the ticket
+(identity and token stay pinned) and stops the client advertising a peer address, so the server
+sends it everything itself. Measured N=65536: this node alone 2.4 s/step; the TCP head-of-line
+blocking makes it slower than leaving it out when the other nodes are fast.

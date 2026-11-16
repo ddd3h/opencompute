@@ -281,6 +281,13 @@ impl Ticket {
         postcard::from_bytes(&bytes).map_err(|e| NetError::Ticket(e.to_string()))
     }
 
+    /// Replace the server's addresses by one socket address (for tunnels and port forwards);
+    /// the pinned identity and token are kept.
+    pub fn with_direct_addr(mut self, a: std::net::SocketAddr) -> Self {
+        self.addr = EndpointAddr::new(self.addr.id).with_ip_addr(a);
+        self
+    }
+
     /// The server's node id.
     pub fn server_id(&self) -> NodeId {
         node_id(self.addr.id)

@@ -89,6 +89,21 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_large_pseudo_random_floats() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let f: Vec<u8> = (0..3 * 16384)
+            .flat_map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                ((x >> 11) as f64 / (1u64 << 53) as f64).to_le_bytes()
+            })
+            .collect();
+        let w = encode(&f);
+        assert_eq!(decode(&w, f.len()).unwrap(), f);
+    }
+
+    #[test]
     fn rejects_bombs_and_garbage() {
         let f = vec![0u8; 1 << 20];
         let w = encode(&f);
