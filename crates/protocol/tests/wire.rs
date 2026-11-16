@@ -26,6 +26,7 @@ fn node_caps() -> NodeCapabilities {
         allowed_memory_bytes: 1 << 30,
         total_memory_bytes: 16 << 30,
         os: "linux".into(),
+        avx2: false,
     }
 }
 
@@ -359,6 +360,7 @@ fn postcard_roundtrip_control_responses() {
                 completed: 100,
                 last_seen_ms: 250,
                 local: true,
+                mean_task_ms: Some(12.5),
             }]),
         ),
         ("Jobs", ControlResponse::Jobs(vec![job_info(), job_info()])),

@@ -21,6 +21,7 @@ fn caps(c: u32) -> NodeCapabilities {
         allowed_memory_bytes: 1 << 30,
         total_memory_bytes: 1 << 30,
         os: "sim".into(),
+        avx2: false,
     }
 }
 

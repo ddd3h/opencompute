@@ -87,7 +87,14 @@ async fn main() -> Result<(), opencompute::Error> {
     let (n, steps, blocks) = (arg(1, 4096), arg(2, 10), arg(3, 16));
     let (eps2, dt) = (0.05f64 * 0.05, 0.01f64);
     let cluster = Cluster::connect_default().await?;
-    let kind = if std::env::var("NBODY_NATIVE").as_deref() == Ok("1") {
+    // NBODY_NATIVE=1 / 0 forces the native / WASM kernel; unset picks native when most slots
+    // are on AVX2 workers. blocks = 0 lets the tuner choose the task count from the first steps' timings.
+    let native = match std::env::var("NBODY_NATIVE").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => cluster.prefers_native().await?,
+    };
+    let kind = if native {
         TaskKind::Builtin("nbody_force".into())
     } else {
         TaskKind::Wasm(
@@ -99,10 +106,17 @@ async fn main() -> Result<(), opencompute::Error> {
                 .hash,
         )
     };
-    let ranges: Vec<(usize, usize)> = (0..blocks)
-        .map(|b| (b * n / blocks, (b + 1) * n / blocks))
-        .filter(|(a, b)| b > a)
-        .collect();
+    let tuner = std::cell::RefCell::new(if blocks == 0 {
+        Some(cluster.block_tuner(n).await?)
+    } else {
+        None
+    });
+    let ranges_for = |blocks: usize| -> Vec<(usize, usize)> {
+        (0..blocks)
+            .map(|b| (b * n / blocks, (b + 1) * n / blocks))
+            .filter(|(a, b)| b > a)
+            .collect()
+    };
 
     let (mut pos, mut vel) = initial(n);
     let e0 = energy(&pos, &vel, eps2);
@@ -112,6 +126,8 @@ async fn main() -> Result<(), opencompute::Error> {
     let force_eval = async |pos: &[f64], acc: &mut Vec<f64>| -> Result<(), opencompute::Error> {
         let t = Instant::now();
         let _g = scopeguard(&times, t);
+        let nb = tuner.borrow().as_ref().map_or(blocks, |t| t.blocks());
+        let ranges = ranges_for(nb);
         let blob: Vec<u8> = pos.iter().flat_map(|x| x.to_le_bytes()).collect();
         let inputs: Vec<Range> = ranges
             .iter()
@@ -124,6 +140,9 @@ async fn main() -> Result<(), opencompute::Error> {
         let parts: Vec<Vec<f64>> = cluster.map_shared_with(kind.clone(), blob, inputs).await?;
         acc.clear();
         acc.extend(parts.into_iter().flatten());
+        if let Some(tu) = tuner.borrow_mut().as_mut() {
+            tu.record(t.elapsed().as_secs_f64() * 1000.0);
+        }
         Ok(())
     };
     force_eval(&pos, &mut acc).await?;
@@ -147,6 +166,14 @@ async fn main() -> Result<(), opencompute::Error> {
     let e1 = energy(&pos, &vel, eps2);
 
     // Same integration in this process, one block.
+    if std::env::var("NBODY_VERIFY").as_deref() == Ok("0") {
+        let used = tuner.borrow().as_ref().map_or(blocks, |t| t.best_blocks());
+        println!(
+            "N={n} steps={steps} blocks={used} kernel={} (not verified)",
+            if native { "native" } else { "wasm" }
+        );
+        return Ok(());
+    }
     let t1 = Instant::now();
     let (mut rp, mut rv) = initial(n);
     let mut ra = force::accelerations(&rp, 0, n, eps2);
@@ -159,7 +186,12 @@ async fn main() -> Result<(), opencompute::Error> {
     let local = t1.elapsed();
 
     let pairs = (n as f64) * (n as f64) * (steps + 1) as f64;
-    println!("N={n} steps={steps} blocks={}", ranges.len());
+    let used = tuner.borrow().as_ref().map_or(blocks, |t| t.best_blocks());
+    println!(
+        "N={n} steps={steps} blocks={used}{} kernel={}",
+        if blocks == 0 { " (auto)" } else { "" },
+        if native { "native" } else { "wasm" }
+    );
     println!(
         "cluster: {dist:.2?} ({:.1} ms/step, {:.2} Ginteractions/s)",
         dist.as_secs_f64() * 1e3 / steps as f64,

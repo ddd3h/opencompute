@@ -164,6 +164,9 @@ impl PlacementPolicy for SpeedAware {
     }
 }
 
+/// A node that was held back this long gets a task anyway, to refresh its speed estimate.
+const PROBE_AFTER_MS: u64 = 5_000;
+
 /// Dispatch tuning knobs (all default to the classic behaviour).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tuning {
@@ -201,6 +204,10 @@ struct Task {
     failures: u32,
     state: TaskState,
     assigned: Option<(NodeId, u64)>, // node, deadline
+    /// When the current attempt was handed out, and whether the node had an idle slot then
+    /// (so the task started right away and its round trip is a clean latency sample).
+    assigned_at: u64,
+    idle_assign: bool,
     outcome: Option<TaskOutcome>,
 }
 
@@ -217,9 +224,23 @@ struct Node {
     last_seen: u64,
     completed: u64,
     ewma_ms: Option<f64>,
+    /// Round trip not spent computing (send, queueing at the client, result upload), ms.
+    overhead_ms: Option<f64>,
+    /// When the node last got a task (held-back nodes are probed now and then so their
+    /// estimates cannot go stale).
+    last_assign: u64,
+    /// Job the node last finished a task of, and how many of that job it has finished: after
+    /// the first one the job's shared data is there, so later round trips are clean samples.
+    cur_job: Option<JobId>,
+    cur_done: u32,
 }
 
 impl Node {
+    /// Time one task takes from hand-out to result on an otherwise idle slot.
+    fn service_ms(&self) -> Option<f64> {
+        self.ewma_ms.map(|e| e + self.overhead_ms.unwrap_or(0.0))
+    }
+
     fn slots(&self) -> u32 {
         self.caps
             .max_concurrent_tasks
@@ -245,6 +266,8 @@ pub struct NodeSnapshot {
     pub last_seen_ms: u64,
     /// In-process worker.
     pub local: bool,
+    /// Measured time per task including the round trip (ms).
+    pub mean_task_ms: Option<f64>,
 }
 
 /// The scheduler.
@@ -358,6 +381,34 @@ impl Scheduler {
         }
     }
 
+    /// Record the round trip of a finished task: time since hand-out minus the node's own
+    /// compute time. Only tasks that found an idle slot count, so queueing behind other tasks
+    /// does not look like a slow link. Call before `on_result`.
+    pub fn record_roundtrip(&mut self, node: NodeId, task: TaskId, now: u64, elapsed_ms: f64) {
+        let Some(t) = self.tasks.get(&task) else {
+            return;
+        };
+        if t.assigned.map(|(n, _)| n) != Some(node) {
+            return;
+        }
+        let (job, clean) = (t.job, t.idle_assign);
+        let over = (now.saturating_sub(t.assigned_at) as f64 - elapsed_ms).max(0.0);
+        if let Some(n) = self.nodes.get_mut(&node) {
+            if n.cur_job != Some(job) {
+                n.cur_job = Some(job);
+                n.cur_done = 0;
+            }
+            n.cur_done += 1;
+            if !clean {
+                return;
+            }
+            n.overhead_ms = Some(match n.overhead_ms {
+                Some(o) => o + 0.25 * (over - o),
+                None => over,
+            });
+        }
+    }
+
     // ---- nodes -------------------------------------------------------------------
 
     /// Register (or re-register) a node. If the node was already known its old tasks are re-queued.
@@ -380,6 +431,10 @@ impl Scheduler {
                 last_seen: now,
                 completed: 0,
                 ewma_ms: None,
+                overhead_ms: None,
+                last_assign: 0,
+                cur_job: None,
+                cur_done: 0,
             },
         );
     }
@@ -440,6 +495,7 @@ impl Scheduler {
                 completed: n.completed,
                 last_seen_ms: now.saturating_sub(n.last_seen),
                 local: n.local,
+                mean_task_ms: n.service_ms(),
             })
             .collect();
         v.sort_by_key(|n| n.id);
@@ -470,6 +526,8 @@ impl Scheduler {
                     failures: 0,
                     state: TaskState::Pending,
                     assigned: None,
+                    assigned_at: 0,
+                    idle_assign: false,
                     outcome: None,
                 },
             );
@@ -484,6 +542,26 @@ impl Scheduler {
             },
         );
         job_id
+    }
+
+    /// Drop a job whose tasks are all finished, with its results. Returns whether it was dropped.
+    pub fn forget_job(&mut self, job: JobId) -> bool {
+        let Some(j) = self.jobs.get(&job) else {
+            return false;
+        };
+        if j.tasks
+            .iter()
+            .any(|t| self.tasks.get(t).is_some_and(|x| !x.state.is_terminal()))
+        {
+            return false;
+        }
+        if let Some(j) = self.jobs.remove(&job) {
+            for t in j.tasks {
+                self.tasks.remove(&t);
+            }
+        }
+        self.revision += 1;
+        true
     }
 
     /// Cancel all non-terminal tasks of a job. Returns `(node, task, attempt)` for tasks that were
@@ -552,12 +630,12 @@ impl Scheduler {
                         slots,
                         capabilities: n.caps.clone(),
                         used,
-                        mean_task_ms: n.ewma_ms,
+                        mean_task_ms: n.service_ms(),
                     })
                 })
                 .collect();
             if self.tuning.tail_holdback {
-                self.hold_back_slow(&mut views);
+                self.hold_back_slow(&mut views, now);
             }
             if views.is_empty() {
                 break;
@@ -570,6 +648,16 @@ impl Scheduler {
             };
             let task = self.tasks.get_mut(&task_id).expect("queued task exists");
             task.attempt += 1;
+            task.assigned_at = now;
+            if let Some(n) = self.nodes.get_mut(&node_id) {
+                n.last_assign = now;
+            }
+            let job = task.job;
+            task.idle_assign = views[idx].used < views[idx].slots
+                && self
+                    .nodes
+                    .get(&node_id)
+                    .is_some_and(|n| n.cur_job == Some(job) && n.cur_done >= 1);
             task.state = TaskState::Assigned;
             task.assigned = Some((node_id, now.saturating_add(task.timeout_ms)));
             self.nodes
@@ -592,16 +680,19 @@ impl Scheduler {
         out
     }
 
-    /// Drop candidates that would only slow down the tail of the batch: nodes measured slower
-    /// than `holdback_ratio` x the best node while the queue is no longer than the number of
-    /// slots on strictly faster nodes (so those can absorb everything within about one of
-    /// their own task times).
-    fn hold_back_slow(&self, views: &mut Vec<NodeView>) {
+    /// Drop candidates that would only slow down the tail of the batch.
+    ///
+    /// Two rules, both on measured per-task service time (compute + round trip):
+    /// - a node slower than `holdback_ratio` x the best node is skipped while the queue is no
+    ///   longer than the slots on strictly faster nodes (they absorb it within one task time);
+    /// - a node whose task would finish after the *other* nodes have drained the queue
+    ///   (queue / their throughput + their fastest task) is skipped.
+    fn hold_back_slow(&self, views: &mut Vec<NodeView>, now: u64) {
         let queued = self.queue.len() as u32;
         let best = self
             .nodes
             .values()
-            .filter_map(|n| n.ewma_ms)
+            .filter_map(|n| n.service_ms())
             .fold(f64::INFINITY, f64::min);
         if !best.is_finite() {
             return;
@@ -611,19 +702,40 @@ impl Scheduler {
             let Some(ms) = v.mean_task_ms else {
                 return true;
             };
-            if ms <= limit {
+            let idle_for = self
+                .nodes
+                .get(&v.id)
+                .map_or(0, |n| now.saturating_sub(n.last_assign));
+            if idle_for >= PROBE_AFTER_MS && queued > 4 * v.slots {
                 return true;
             }
             let faster: u32 = self
                 .nodes
                 .values()
                 .filter(|n| {
-                    n.ewma_ms
+                    n.service_ms()
                         .is_some_and(|m| m * self.tuning.holdback_ratio < ms)
                 })
                 .map(|n| n.slots())
                 .sum();
-            queued > faster
+            if ms > limit && queued <= faster {
+                return false;
+            }
+            // Throughput and fastest finish of everyone else.
+            let (mut rate, mut fastest) = (0.0f64, f64::INFINITY);
+            for (id, n) in &self.nodes {
+                if *id == v.id {
+                    continue;
+                }
+                if let (Some(e), Some(m)) = (n.ewma_ms, n.service_ms()) {
+                    rate += n.slots() as f64 / e.max(0.5);
+                    fastest = fastest.min(m);
+                }
+            }
+            if rate <= 0.0 {
+                return true;
+            }
+            ms <= queued as f64 / rate + fastest
         });
     }
 
@@ -821,6 +933,8 @@ impl Scheduler {
                     failures: t.failures,
                     state,
                     assigned: None,
+                    assigned_at: 0,
+                    idle_assign: false,
                     outcome: t.outcome,
                 },
             );
@@ -902,6 +1016,7 @@ mod tests {
             allowed_memory_bytes: 1 << 30,
             total_memory_bytes: 1 << 30,
             os: "test".into(),
+            avx2: false,
         }
     }
     fn nid(b: u8) -> NodeId {
@@ -1115,5 +1230,57 @@ mod tests {
         s2.submit_job(spec(10));
         let b = s2.schedule(0);
         assert!(b.iter().any(|x| x.node == slow));
+    }
+
+    #[test]
+    fn slow_round_trip_makes_a_fast_node_look_slow() {
+        let mut s = Scheduler::with_policy(60_000, Box::new(SpeedAware));
+        let (far, near) = (nid(1), nid(2));
+        s.add_node(far, "far".into(), caps(2), false, 0);
+        s.add_node(near, "near".into(), caps(2), false, 0);
+        s.set_tuning(Tuning {
+            tail_holdback: true,
+            ..Tuning::default()
+        });
+        // Both compute in 40 ms, but results from `far` take 2 s to arrive. The first wave of a
+        // job does not count (shared data may still be on its way); the second does.
+        s.submit_job(spec(8));
+        let mut now = 0;
+        for _wave in 0..2 {
+            for a in s.schedule(now) {
+                let lag = if a.node == far { 2_000 } else { 50 };
+                s.record_roundtrip(a.node, a.task_id, now + lag, 40.0);
+                s.record_elapsed(a.node, 40.0);
+                s.on_result(a.node, a.task_id, a.attempt, vec![]);
+            }
+            now += 2_000;
+        }
+        let snap = s.nodes(0);
+        let ms = |n: NodeId| {
+            snap.iter()
+                .find(|x| x.id == n)
+                .unwrap()
+                .mean_task_ms
+                .unwrap()
+        };
+        assert!(ms(far) > 1_500.0 && ms(near) < 100.0);
+        // A short queue stays off the far node; a long one still uses it.
+        s.submit_job(spec(3));
+        assert!(s.schedule(now + 100).iter().all(|a| a.node == near));
+    }
+
+    #[test]
+    fn forget_job_drops_only_finished_jobs() {
+        let mut s = Scheduler::new(5000);
+        s.add_node(nid(1), "a".into(), caps(2), false, 0);
+        let job = s.submit_job(spec(2));
+        let a = s.schedule(0);
+        assert!(!s.forget_job(job), "unfinished job is kept");
+        for x in a {
+            s.on_result(nid(1), x.task_id, x.attempt, vec![1]);
+        }
+        assert!(s.forget_job(job));
+        assert!(s.job_info(job, false).is_none());
+        assert!(!s.forget_job(job));
     }
 }

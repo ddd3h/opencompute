@@ -86,7 +86,19 @@ impl ClientConfig {
             allowed_memory_bytes: self.allowed_memory_bytes.min(total_mem.max(1)),
             total_memory_bytes: total_mem,
             os: std::env::consts::OS.to_string(),
+            avx2: cpu_has_avx2(),
         }
+    }
+}
+
+fn cpu_has_avx2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
     }
 }
 

@@ -73,8 +73,15 @@ struct Conn {
 /// demand so the bounded outbound queue cannot overflow.
 const MAX_PUSH_CHUNKS: usize = 32;
 
-/// How long a node waits for a peer to push a blob before asking the server.
-const BLOB_PEER_WAIT_MS: u32 = 2500;
+/// Bounds for how long a node waits for a peer to push a blob before asking the server.
+const BLOB_PEER_WAIT_MIN_MS: u32 = 1000;
+const BLOB_PEER_WAIT_MAX_MS: u32 = 6000;
+
+/// Time the seed needs to get `wire_len` bytes from the server (1.5x, plus forwarding slack).
+fn peer_wait_ms(wire_len: usize, seed_bps: f64) -> u32 {
+    let ms = 1.5 * wire_len as f64 / seed_bps.max(1.0) * 1000.0 + 400.0;
+    (ms as u32).clamp(BLOB_PEER_WAIT_MIN_MS, BLOB_PEER_WAIT_MAX_MS)
+}
 
 fn blob_chunks(hash: ModuleHash, wire: &[u8]) -> impl Iterator<Item = ServerMessage> + '_ {
     let total = wire.len() as u64;
@@ -429,17 +436,20 @@ async fn dispatch_loop(state: Arc<State>) {
             {
                 if let Some(seed) = inner.blob_route(&a.node, h) {
                     // Slow link to the server: a faster node forwards the blob to it.
+                    let wait_ms = peer_wait_ms(
+                        wire.len(),
+                        inner.blob_bps.get(&seed).copied().unwrap_or(1e6),
+                    );
+                    debug!(node = %a.node.short(), seed = %seed.short(), wait_ms, "blob via peer");
                     let peer = PeerInfo {
                         node: a.node,
                         addr: inner.peer_addrs.get(&a.node).cloned().unwrap_or_default(),
                     };
                     if let Some(c) = inner.conns.get_mut(&a.node) {
                         c.pushed.insert(h);
-                        pushed_ok =
-                            c.tx.try_send(ServerMessage::BlobExpect(BlobExpect {
-                                hash: h,
-                                wait_ms: BLOB_PEER_WAIT_MS,
-                            }))
+                        pushed_ok = c
+                            .tx
+                            .try_send(ServerMessage::BlobExpect(BlobExpect { hash: h, wait_ms }))
                             .is_ok();
                     }
                     if let Some(c) = inner.conns.get(&seed) {
@@ -449,6 +459,7 @@ async fn dispatch_loop(state: Arc<State>) {
                         }));
                     }
                 } else {
+                    debug!(node = %a.node.short(), "blob direct");
                     pushed_ok = inner.push_blob(&a.node, h);
                 }
             }
@@ -604,7 +615,15 @@ where
             ClientMessage::TaskResult(r) => {
                 let mut i = state.lock();
                 i.sched.heartbeat(peer, state.now());
-                if digest(&r.output) != r.output_hash || r.output.len() > MAX_PAYLOAD_LEN {
+                let intact =
+                    digest(&r.output) == r.output_hash && r.output.len() <= MAX_PAYLOAD_LEN;
+                if intact {
+                    // Before `on_result`: the round trip needs the task still assigned.
+                    let now = state.now();
+                    i.sched
+                        .record_roundtrip(peer, r.task_id, now, r.elapsed_ms as f64);
+                }
+                if !intact {
                     warn!(node = %peer.short(), task = %r.task_id, "result failed integrity check");
                     i.sched.on_failed(
                         peer,

@@ -161,12 +161,12 @@ async fn main() -> Result<()> {
         Cmd::Nodes => {
             let nodes = cluster().await?.nodes().await?;
             println!(
-                "{:<10} {:<16} {:>5} {:>6} {:>8} {:>9} {:>10}",
-                "NODE", "NAME", "CORES", "TASKS", "RUNNING", "DONE", "LAST-SEEN"
+                "{:<10} {:<16} {:>5} {:>6} {:>8} {:>9} {:>10} {:>9}",
+                "NODE", "NAME", "CORES", "TASKS", "RUNNING", "DONE", "LAST-SEEN", "MS/TASK"
             );
             for n in &nodes {
                 println!(
-                    "{:<10} {:<16} {:>5} {:>6} {:>8} {:>9} {:>8}ms{}",
+                    "{:<10} {:<16} {:>5} {:>6} {:>8} {:>9} {:>8}ms {:>9}{}",
                     n.node_id.short(),
                     n.name,
                     n.capabilities.allowed_cores,
@@ -174,6 +174,8 @@ async fn main() -> Result<()> {
                     n.assigned,
                     n.completed,
                     n.last_seen_ms,
+                    n.mean_task_ms
+                        .map_or("-".to_string(), |m| format!("{m:.0}")),
                     if n.local { "  (server)" } else { "" }
                 );
             }

@@ -202,6 +202,15 @@ impl Cluster {
         }
     }
 
+    /// Drop a finished job and its stored results on the server. Best effort: unfinished jobs
+    /// are kept. The `map*` helpers call this for you.
+    pub async fn forget_job(&self, job: JobId) -> Result<(), Error> {
+        match self.request(ControlRequest::ForgetJob(job)).await? {
+            ControlResponse::Ok => Ok(()),
+            _ => Err(Error::Protocol),
+        }
+    }
+
     /// Submit a job without waiting. Inputs are raw bytes.
     pub async fn submit_raw(
         &self,
@@ -292,6 +301,7 @@ impl Cluster {
             .collect::<Result<_, _>>()?;
         let job = self.submit_raw(kind, raw, o).await?;
         let results = self.wait_raw(job, o.wait).await?;
+        let _ = self.forget_job(job).await;
         results
             .into_iter()
             .enumerate()
@@ -338,7 +348,11 @@ impl Cluster {
         let blob = self.upload_blob(shared).await?;
         let res = async {
             let job = self.submit_raw_shared(kind, Some(blob), raw, &o).await?;
-            self.wait_raw(job, o.wait).await
+            let r = self.wait_raw(job, o.wait).await;
+            if r.is_ok() {
+                let _ = self.forget_job(job).await;
+            }
+            r
         }
         .await;
         let _ = self.release_blob(blob).await;
@@ -349,6 +363,35 @@ impl Cluster {
                 Err(message) => Err(Error::TaskFailed { index: i, message }),
             })
             .collect()
+    }
+
+    /// Concurrent task slots over all connected workers (0 = nobody connected).
+    pub async fn total_slots(&self) -> Result<usize, Error> {
+        Ok(self
+            .nodes()
+            .await?
+            .iter()
+            .map(|n| slots_of(&n.capabilities))
+            .sum())
+    }
+
+    /// `true` if at least 80% of the task slots sit on workers with AVX2, so built-in native
+    /// kernels beat their WASM twins (the rest run a bit-identical scalar fallback, which the
+    /// speed-aware scheduler simply gives less work).
+    pub async fn prefers_native(&self) -> Result<bool, Error> {
+        let nodes = self.nodes().await?;
+        let all: usize = nodes.iter().map(|n| slots_of(&n.capabilities)).sum();
+        let simd: usize = nodes
+            .iter()
+            .filter(|n| n.capabilities.avx2)
+            .map(|n| slots_of(&n.capabilities))
+            .sum();
+        Ok(all > 0 && simd * 5 >= all * 4)
+    }
+
+    /// A [`BlockTuner`] sized for the workers connected right now.
+    pub async fn block_tuner(&self, max_blocks: usize) -> Result<BlockTuner, Error> {
+        Ok(BlockTuner::new(self.total_slots().await?, max_blocks))
     }
 
     /// Server counters.
@@ -521,4 +564,117 @@ pub struct LbmRun {
     pub parts_per_node: u32,
     /// Direct mode: halo depth, exchanged once every that many steps (0 = automatic).
     pub halo_depth: u32,
+}
+
+fn slots_of(c: &NodeCapabilities) -> usize {
+    c.max_concurrent_tasks.min(c.allowed_cores).max(1) as usize
+}
+
+/// Picks how many tasks to split a repeated step into, by timing a few sizes and mostly using
+/// the one with the lowest recent step time. Too few tasks leave fast workers idle at the end of
+/// a step; too many pay per-task overhead. Every size is re-measured now and then, so the choice
+/// follows changes in the cluster. Call [`blocks`](Self::blocks) before each step and
+/// [`record`](Self::record) with its wall time (ms) after it.
+#[derive(Clone, Debug)]
+pub struct BlockTuner {
+    cands: Vec<usize>,
+    est: Vec<Option<f64>>,
+    measured_at: Vec<usize>,
+    step: usize,
+    cur: usize,
+}
+
+impl BlockTuner {
+    /// A size is re-measured when its last measurement is this many steps old.
+    const STALE_AFTER: usize = 24;
+    /// Weight of a new measurement.
+    const ALPHA: f64 = 0.4;
+
+    /// Candidates around `8 x slots` (the size that worked best on mixed clusters), capped at
+    /// `max_blocks` (e.g. the number of items).
+    pub fn new(slots: usize, max_blocks: usize) -> Self {
+        let base = 8 * slots.max(1);
+        let mut cands: Vec<usize> = [0.5, 1.0, 1.5, 2.25]
+            .iter()
+            .map(|f| ((base as f64 * f) as usize).clamp(slots.max(1), max_blocks.max(1)))
+            .collect();
+        cands.sort_unstable();
+        cands.dedup();
+        let n = cands.len();
+        let start = (0..n)
+            .min_by_key(|&i| cands[i].abs_diff(base.clamp(slots.max(1), max_blocks.max(1))))
+            .unwrap_or(0);
+        Self {
+            cands,
+            est: vec![None; n],
+            measured_at: vec![0; n],
+            step: 0,
+            cur: start,
+        }
+    }
+
+    fn best_index(&self) -> usize {
+        (0..self.cands.len())
+            .filter_map(|i| self.est[i].map(|e| (i, e)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(self.cur, |(i, _)| i)
+    }
+
+    /// Task count for the next step.
+    pub fn blocks(&self) -> usize {
+        self.cands[self.cur]
+    }
+
+    /// Report the wall time (ms) of the step run with [`blocks`](Self::blocks).
+    pub fn record(&mut self, ms: f64) {
+        let i = self.cur;
+        self.est[i] = Some(match self.est[i] {
+            Some(e) => e + Self::ALPHA * (ms - e),
+            None => ms,
+        });
+        self.measured_at[i] = self.step;
+        self.step += 1;
+        let stale = (0..self.cands.len()).find(|&j| {
+            self.est[j].is_none() || self.step - self.measured_at[j] >= Self::STALE_AFTER
+        });
+        self.cur = match stale {
+            Some(j) if self.step.is_multiple_of(3) => j,
+            _ => self.best_index(),
+        };
+    }
+
+    /// The size currently preferred.
+    pub fn best_blocks(&self) -> usize {
+        self.cands[self.best_index()]
+    }
+}
+
+#[cfg(test)]
+mod tuner_tests {
+    use super::*;
+
+    #[test]
+    fn settles_on_the_fastest_size() {
+        let mut t = BlockTuner::new(50, 100_000);
+        let cost = |b: usize| (b as f64 - 600.0).abs() + 500.0;
+        for _ in 0..60 {
+            let b = t.blocks();
+            t.record(cost(b));
+        }
+        assert_eq!(t.best_blocks(), 600);
+        // The cluster changes: now fewer, larger tasks are best.
+        let cost2 = |b: usize| (b as f64 - 200.0).abs() + 500.0;
+        for _ in 0..80 {
+            let b = t.blocks();
+            t.record(cost2(b));
+        }
+        assert_eq!(t.best_blocks(), 200);
+    }
+
+    #[test]
+    fn respects_the_cap_and_floor() {
+        let t = BlockTuner::new(50, 60);
+        assert!(t.blocks() >= 50 && t.blocks() <= 60);
+        assert!(BlockTuner::new(0, 0).blocks() >= 1);
+    }
 }

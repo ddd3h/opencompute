@@ -48,6 +48,8 @@ pub struct NodeCapabilities {
     pub total_memory_bytes: u64,
     /// OS string, informational only.
     pub os: String,
+    /// The machine has AVX2, so native built-in kernels beat the WASM ones.
+    pub avx2: bool,
 }
 
 impl NodeCapabilities {

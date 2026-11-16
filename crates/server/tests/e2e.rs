@@ -89,12 +89,21 @@ async fn hundred_tasks_survive_client_loss() {
         let path = srv.control_path.clone();
         async move {
             let c = Cluster::connect(path).await.unwrap();
-            c.map_with::<(u64, u64), u64>(
-                TaskKind::Builtin("sleep_square".into()),
-                inputs,
-                &JobOptions::default(),
+            // Raw submit: `map_with` would forget the job, and this test inspects it afterwards.
+            let raw = inputs
+                .iter()
+                .map(|i| postcard::to_stdvec(i).unwrap())
+                .collect();
+            let o = JobOptions::default();
+            let id = c
+                .submit_raw(TaskKind::Builtin("sleep_square".into()), raw, &o)
+                .await?;
+            let r = c.wait_raw(id, o.wait).await?;
+            Ok::<Vec<u64>, opencompute::Error>(
+                r.into_iter()
+                    .map(|x| postcard::from_bytes(&x.unwrap()).unwrap())
+                    .collect(),
             )
-            .await
         }
     });
     tokio::time::sleep(Duration::from_millis(1200)).await;

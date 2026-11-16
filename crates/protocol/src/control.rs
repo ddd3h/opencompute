@@ -43,6 +43,9 @@ pub enum ControlRequest {
     UploadBlob(Vec<u8>),
     /// Forget a blob (call after the jobs using it are done; pending tasks would fail). Added in v5.
     ReleaseBlob(ModuleHash),
+    /// Drop a finished job and its results from the server (frees memory and state file space).
+    /// Ignored while tasks of the job are unfinished. Added in v5.
+    ForgetJob(JobId),
 }
 
 /// Stateful job submission: parts form a chain; neighbours exchange boundary data every step.
@@ -207,6 +210,8 @@ pub struct NodeInfo {
     pub last_seen_ms: u64,
     /// Whether this is the server's in-process worker.
     pub local: bool,
+    /// Measured time per task including the round trip (ms); `None` until a task finished.
+    pub mean_task_ms: Option<f64>,
 }
 
 /// Job summary.

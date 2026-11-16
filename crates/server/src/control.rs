@@ -89,6 +89,7 @@ async fn handle(
                         completed: n.completed,
                         last_seen_ms: n.last_seen_ms,
                         local: n.local,
+                        mean_task_ms: n.mean_task_ms,
                     })
                     .collect(),
             )
@@ -119,6 +120,10 @@ async fn handle(
         ControlRequest::ReleaseBlob(h) => {
             state.lock().drop_blob(&h);
             crate::persist::remove_blob(&state.cfg.data_dir, &h);
+            R::Ok
+        }
+        ControlRequest::ForgetJob(j) => {
+            state.lock().sched.forget_job(j);
             R::Ok
         }
         ControlRequest::Submit(s) => {

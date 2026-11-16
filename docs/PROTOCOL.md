@@ -1155,3 +1155,23 @@ forward it with `ssh -R 127.0.0.1:17777:127.0.0.1:17777 <client-host>`, run
 (identity and token stay pinned) and stops the client advertising a peer address, so the server
 sends it everything itself. Measured N=65536: this node alone 2.4 s/step; the TCP head-of-line
 blocking makes it slower than leaving it out when the other nodes are fast.
+
+## 14. Automatic tuning (added with v5)
+
+- `NodeCapabilities.avx2` (last field): the worker can run the native SIMD built-in kernels.
+  `Cluster::prefers_native()` is true when at least 80% of the slots are on such workers.
+- `NodeInfo.mean_task_ms` (last field): measured time per task = compute (EWMA of `elapsed_ms`)
+  plus round trip. The round trip is `result arrival - hand-out - elapsed_ms`, sampled only for
+  tasks that found an idle slot after the node had finished one task of the same job (so the
+  job's shared data was already there).
+- Scheduler tail rules (`Tuning::tail_holdback`): a node is skipped for the last tasks of a batch
+  if it is slower than `holdback_ratio` x the best node while faster slots can absorb the queue,
+  or if its task would finish after the other nodes drain the queue. A skipped node still gets a
+  task after 5 s without one when the queue is long, so its estimate cannot go stale.
+- `ControlRequest::ForgetJob(JobId)` (last variant): drop a finished job and its results. The
+  `map*` helpers send it after collecting the results, so the state file no longer grows with
+  every step (it reached 288 MB after 180 N-body steps and slowed everything down).
+- `BlobExpect.wait_ms` is derived from the seed's measured download rate (1.5x its transfer
+  time + 400 ms, clamped to 1-6 s) instead of a constant.
+- `BlockTuner` (compute-api): picks the task count of a repeated step among 0.5x-2.25x of
+  `8 x slots` by timing them, re-measuring each every 24 steps; `nbody_batch N steps 0` uses it.
