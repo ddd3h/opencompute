@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" font-size="16" fill="#0f172a">
+<title>計算機 D を加えたときの比較</title>
+<desc>ssh トンネルで接続した計算機 D を 3 台に加えると、自動チューニング前は 751 ms から 1317 ms に遅くなり、後は 366 ms と約 400 ms でほぼ変わらない。</desc>
+<rect width="960" height="420" rx="10" fill="white"/>
+<text x="32" y="46" font-size="26" font-weight="bold">計算機 D を加えたときの比較</text>
+<text x="32" y="72" font-size="15" fill="#475569">N=65,536、1 ステップの中央値(ms)</text>
+<text x="32" y="116" font-weight="bold">自動チューニング前(WASM、408 ブロック)</text>
+<text x="288" y="156" text-anchor="end">3 台</text>
+<rect x="300" y="132" width="279" height="32" rx="5" fill="#2563eb"/>
+<text x="588.9428571428572" y="155" font-weight="bold">751 ms</text>
+<text x="288" y="202" text-anchor="end">3 台 + 計算機 D</text>
+<rect x="300" y="178" width="489" height="32" rx="5" fill="#dc2626"/>
+<text x="799.1714285714286" y="201" font-weight="bold">1,317 ms</text>
+<text x="32" y="244" font-weight="bold">自動チューニング後(ネイティブ、自動ブロック数)</text>
+<text x="288" y="284" text-anchor="end">3 台</text>
+<rect x="300" y="260" width="136" height="32" rx="5" fill="#2563eb"/>
+<text x="445.9428571428572" y="283" font-weight="bold">366 ms</text>
+<text x="288" y="330" text-anchor="end">3 台 + 計算機 D</text>
+<rect x="300" y="306" width="149" height="32" rx="5" fill="#16a34a"/>
+<text x="458.57142857142856" y="329" font-weight="bold">約 400 ms</text>
+<text x="32" y="402" font-size="14" fill="#475569">自動チューニング後は、結果の返りが遅い計算機を最後のタスクから外すので、加えても害はなくなった(得もない)。</text>
+</svg>

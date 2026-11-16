@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 400" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" font-size="16" fill="#0f172a">
+<title>状態ファイルの大きさ</title>
+<desc>ForgetJob の導入前は、状態ファイル state.bin が実行ステップ数に比例して大きくなり 180 ステップで 288 MB に達した。導入後は数十バイトのまま。</desc>
+<rect width="960" height="400" rx="10" fill="white"/>
+<text x="32" y="46" font-size="26" font-weight="bold">状態ファイルの大きさ</text>
+<text x="32" y="72" font-size="15" fill="#475569">state.bin の大きさ(MB)と、実行したステップ数</text>
+<path d="M110 310H890" stroke="#e2e8f0"/>
+<text x="102" y="315.0" text-anchor="end" font-size="13" fill="#475569">0</text>
+<path d="M110 237H890" stroke="#e2e8f0"/>
+<text x="102" y="241.66666666666669" text-anchor="end" font-size="13" fill="#475569">100</text>
+<path d="M110 163H890" stroke="#e2e8f0"/>
+<text x="102" y="168.33333333333334" text-anchor="end" font-size="13" fill="#475569">200</text>
+<path d="M110 90H890" stroke="#e2e8f0"/>
+<text x="102" y="95.0" text-anchor="end" font-size="13" fill="#475569">300</text>
+<text x="110.0" y="334" text-anchor="middle" font-size="13" fill="#475569">0</text>
+<text x="305.0" y="334" text-anchor="middle" font-size="13" fill="#475569">50</text>
+<text x="500.0" y="334" text-anchor="middle" font-size="13" fill="#475569">100</text>
+<text x="695.0" y="334" text-anchor="middle" font-size="13" fill="#475569">150</text>
+<text x="890.0" y="334" text-anchor="middle" font-size="13" fill="#475569">200</text>
+<text x="500.0" y="360" text-anchor="middle" font-size="14" fill="#475569">ステップ数</text>
+<path d="M110 310L812 99" stroke="#dc2626" stroke-width="4"/>
+<circle cx="812" cy="99" r="6" fill="#dc2626"/>
+<text x="796.0" y="90.80000000000001" text-anchor="end" font-size="15" font-weight="bold" fill="#dc2626">導入前: 180 ステップで 288 MB</text>
+<path d="M110 309H890" stroke="#16a34a" stroke-width="4"/>
+<text x="882" y="298" text-anchor="end" font-size="15" font-weight="bold" fill="#16a34a">導入後: 数十バイトのまま</text>
+<text x="32" y="382" font-size="14" fill="#475569">保存のたびにこの全体を書き出していたため、実行が進むほど遅くなっていた。赤線は 0 と 180 ステップの 2 点を結んだ略図。</text>
+</svg>

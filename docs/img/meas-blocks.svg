@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" font-family="Noto Sans CJK JP, Noto Sans JP, Hiragino Sans, Meiryo, sans-serif" font-size="16" fill="#0f172a">
+<title>ブロック数と 1 ステップの時間</title>
+<desc>WASM・3 台での N 体計算。ブロック数を 204 から 816 まで変えたときの 1 ステップの時間の範囲。少なすぎても多すぎても遅くなる。</desc>
+<rect width="960" height="440" rx="10" fill="white"/>
+<text x="32" y="46" font-size="26" font-weight="bold">ブロック数と 1 ステップの時間</text>
+<text x="32" y="72" font-size="15" fill="#475569">WASM・3 台。棒は測定した回の最小〜最大(ms)</text>
+<path d="M130 88V396" stroke="#e2e8f0"/>
+<text x="130.0" y="418" text-anchor="middle" font-size="13" fill="#475569">0</text>
+<path d="M243 88V396" stroke="#e2e8f0"/>
+<text x="242.94117647058823" y="418" text-anchor="middle" font-size="13" fill="#475569">300</text>
+<path d="M356 88V396" stroke="#e2e8f0"/>
+<text x="355.88235294117646" y="418" text-anchor="middle" font-size="13" fill="#475569">600</text>
+<path d="M469 88V396" stroke="#e2e8f0"/>
+<text x="468.8235294117647" y="418" text-anchor="middle" font-size="13" fill="#475569">900</text>
+<path d="M582 88V396" stroke="#e2e8f0"/>
+<text x="581.7647058823529" y="418" text-anchor="middle" font-size="13" fill="#475569">1,200</text>
+<path d="M695 88V396" stroke="#e2e8f0"/>
+<text x="694.7058823529412" y="418" text-anchor="middle" font-size="13" fill="#475569">1,500</text>
+<path d="M808 88V396" stroke="#e2e8f0"/>
+<text x="807.6470588235294" y="418" text-anchor="middle" font-size="13" fill="#475569">1,800</text>
+<text x="118" y="124" text-anchor="end">204 ブロック</text>
+<rect x="695" y="96" width="8" height="38" rx="5" fill="#dc2626"/>
+<text x="704.7058823529412" y="122" font-weight="bold">約 1,500 ms</text>
+<text x="118" y="184" text-anchor="end">300 ブロック</text>
+<rect x="357" y="156" width="8" height="38" rx="5" fill="#16a34a"/>
+<text x="367.01176470588234" y="182" font-weight="bold">約 603 ms</text>
+<text x="118" y="244" text-anchor="end">408 ブロック</text>
+<rect x="345" y="216" width="143" height="38" rx="5" fill="#16a34a"/>
+<text x="498.0235294117647" y="242" font-weight="bold">570〜951 ms</text>
+<text x="118" y="304" text-anchor="end">612 ブロック</text>
+<rect x="462" y="276" width="38" height="38" rx="5" fill="#2563eb"/>
+<text x="510.0705882352941" y="302" font-weight="bold">883〜983 ms</text>
+<text x="118" y="364" text-anchor="end">816 ブロック</text>
+<rect x="394" y="336" width="80" height="38" rx="5" fill="#2563eb"/>
+<text x="483.3411764705882" y="362" font-weight="bold">700〜912 ms</text>
+<text x="32" y="452" font-size="14" fill="#475569">少なすぎると最後に遅い計算機が残って全体が待たされ、多すぎるとタスクごとの固定費が積み上がる。</text>
+</svg>
