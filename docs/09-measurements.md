@@ -142,7 +142,7 @@ ssh トンネルで D を 3 台に加えると、自動チューニングの導�
 
 D のような計算機をつなぐ手順は [PROTOCOL.md](PROTOCOL.md) の §13 にあります。
 
-![計算機 D を加えたときの比較](img/meas-procyon.svg)
+![計算機 D を加えたときの比較](img/meas-machine-d.svg)
 
 ## 残っている問題
 
