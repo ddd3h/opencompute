@@ -112,6 +112,39 @@ pub enum PeerMessage {
         /// Boundary blob.
         data: Vec<u8>,
     },
+    /// A chunk of a shared-input blob forwarded by a peer that already holds it (added in v5).
+    Blob(PeerBlob),
+}
+
+/// One chunk of a blob in its wire encoding (see `blobwire`), same framing as `ModuleTransfer`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PeerBlob {
+    /// Hash of the decoded blob.
+    pub hash: ModuleHash,
+    /// Total length of the wire encoding.
+    pub total_len: u64,
+    /// Offset of this chunk.
+    pub offset: u64,
+    /// Chunk bytes.
+    pub data: Vec<u8>,
+}
+
+/// Tell a node that already holds (or is about to receive) a blob to forward it to peers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlobRoute {
+    /// Blob to forward.
+    pub hash: ModuleHash,
+    /// Receivers.
+    pub peers: Vec<PeerInfo>,
+}
+
+/// Tell a node a peer will push the blob soon: wait before asking the server for it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlobExpect {
+    /// Blob.
+    pub hash: ModuleHash,
+    /// How long to wait for the peer, in milliseconds.
+    pub wait_ms: u32,
 }
 
 /// Progress report of a part running in direct mode (replaces per-step server relaying).
@@ -369,6 +402,8 @@ pub enum ClientMessage {
     PartProgress(PartProgress),
     /// Fetch a shared input blob (added in v5).
     BlobRequest(ModuleRequest),
+    /// The blob is now cached on this worker (the server uses the timing to rate the link).
+    BlobHave(ModuleHash),
 }
 
 /// Messages sent by the server to a client.
@@ -404,4 +439,8 @@ pub enum ServerMessage {
     BlobTransfer(ModuleTransfer),
     /// Requested blob unknown: never uploaded or released (added in v5).
     BlobNotFound(ModuleHash),
+    /// Forward a blob to these peers once held (added in v5).
+    BlobRoute(BlobRoute),
+    /// A peer will push this blob; wait for it before requesting it (added in v5).
+    BlobExpect(BlobExpect),
 }

@@ -14,6 +14,8 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// Minimum spacing between state rewrites.
+const MIN_SAVE_INTERVAL_MS: u64 = 300;
 const MAGIC: u32 = 0x4f43_5304;
 
 #[derive(Serialize, Deserialize)]
@@ -124,6 +126,13 @@ fn write(dir: &Path, bytes: &[u8]) {
 
 /// Save if anything changed since the last save (called from the dispatcher tick).
 pub(crate) fn maybe_save(state: &Arc<State>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    // The dispatcher also runs on every result/submit wake-up; rewriting the whole state each
+    // time costs O(all jobs) per task. Throttle: the 100 ms tick catches up shortly after.
+    let now = state.now();
+    if now.saturating_sub(state.last_save_ms.load(Relaxed)) < MIN_SAVE_INTERVAL_MS {
+        return;
+    }
     let (bytes, rev) = {
         let g = state.lock();
         let rev = g.sched.revision() + g.srev;
@@ -135,6 +144,7 @@ pub(crate) fn maybe_save(state: &Arc<State>) {
     state
         .saved_rev
         .store(rev, std::sync::atomic::Ordering::Relaxed);
+    state.last_save_ms.store(now, Relaxed);
     state.lock().saves += 1;
     let dir = state.cfg.data_dir.clone();
     // Disk I/O off the async worker thread; ordering is fine because saves are ≥ one tick apart.

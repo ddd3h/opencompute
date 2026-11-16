@@ -118,6 +118,10 @@ pub struct NodeView {
     pub slots: u32,
     /// Capabilities.
     pub capabilities: NodeCapabilities,
+    /// Tasks currently assigned (running or queued on the node).
+    pub used: u32,
+    /// EWMA of the node's task execution time in ms (`None` until it has finished a task).
+    pub mean_task_ms: Option<f64>,
 }
 
 /// Default policy: node with the most free slots (ties broken by id for determinism).
@@ -131,6 +135,55 @@ impl PlacementPolicy for LeastLoaded {
             .max_by(|(_, a), (_, b)| a.free_slots.cmp(&b.free_slots).then(b.id.cmp(&a.id)))
             .map(|(i, _)| i)
             .unwrap_or(0)
+    }
+}
+
+/// Speed-aware placement: give the next task to the node expected to finish it first.
+///
+/// A node's estimate is `mean_task_ms * wave`, where `wave = ceil((used + 1) / slots)` is how
+/// many task-lengths deep the new task would sit on that node. Nodes without measurements count
+/// as the fastest so that they get probed. Ties: faster node, then lower id.
+#[derive(Default)]
+pub struct SpeedAware;
+
+impl PlacementPolicy for SpeedAware {
+    fn pick(&mut self, c: &[NodeView]) -> usize {
+        let key = |v: &NodeView| {
+            let ms = v.mean_task_ms.unwrap_or(0.0);
+            let wave = (v.used + 1).div_ceil(v.slots.max(1)) as f64;
+            (ms * wave, ms)
+        };
+        let mut best = 0;
+        for i in 1..c.len() {
+            let (a, b) = (key(&c[i]), key(&c[best]));
+            if a.0 < b.0 || (a.0 == b.0 && a.1 < b.1) {
+                best = i;
+            }
+        }
+        best
+    }
+}
+
+/// Dispatch tuning knobs (all default to the classic behaviour).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tuning {
+    /// Extra tasks queued per slot beyond the running ones, hiding the result/assign round trip.
+    /// `0` = strictly one task per slot.
+    pub queue_depth: u32,
+    /// Near the end of a batch, refuse to hand a task to a node whose measured task time exceeds
+    /// `holdback_ratio` times the best node's, if enough faster slots exist to absorb the queue.
+    pub tail_holdback: bool,
+    /// See `tail_holdback`.
+    pub holdback_ratio: f64,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            queue_depth: 0,
+            tail_holdback: false,
+            holdback_ratio: 1.5,
+        }
     }
 }
 
@@ -163,6 +216,7 @@ struct Node {
     assigned: HashSet<TaskId>,
     last_seen: u64,
     completed: u64,
+    ewma_ms: Option<f64>,
 }
 
 impl Node {
@@ -204,6 +258,7 @@ pub struct Scheduler {
     policy: Box<dyn PlacementPolicy>,
     heartbeat_timeout_ms: u64,
     revision: u64,
+    tuning: Tuning,
 }
 
 /// Persistable form of one task.
@@ -266,6 +321,40 @@ impl Scheduler {
             policy,
             heartbeat_timeout_ms,
             revision: 0,
+            tuning: Tuning::default(),
+        }
+    }
+
+    /// Scheduler with the speed-aware policy, queue depth 1 and tail hold-back: the recommended
+    /// setup for heterogeneous clusters running many short equal tasks.
+    pub fn tuned(heartbeat_timeout_ms: u64) -> Self {
+        let mut s = Self::with_policy(heartbeat_timeout_ms, Box::new(SpeedAware));
+        let queue_depth = std::env::var("OC_QUEUE_DEPTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        s.tuning = Tuning {
+            queue_depth,
+            tail_holdback: true,
+            holdback_ratio: 1.5,
+        };
+        s
+    }
+
+    /// Replace the dispatch tuning.
+    pub fn set_tuning(&mut self, t: Tuning) {
+        self.tuning = t;
+    }
+
+    /// Record the execution time of a finished task (from `TaskResult::elapsed_ms`); feeds the
+    /// per-node speed estimate. Only comparable between nodes when tasks are of similar size.
+    pub fn record_elapsed(&mut self, node: NodeId, ms: f64) {
+        let ms = ms.max(0.5); // elapsed_ms has 1 ms resolution; avoid zero estimates
+        if let Some(n) = self.nodes.get_mut(&node) {
+            n.ewma_ms = Some(match n.ewma_ms {
+                Some(e) => e + 0.25 * (ms - e),
+                None => ms,
+            });
         }
     }
 
@@ -290,6 +379,7 @@ impl Scheduler {
                 assigned: HashSet::new(),
                 last_seen: now,
                 completed: 0,
+                ewma_ms: None,
             },
         );
     }
@@ -448,20 +538,27 @@ impl Scheduler {
             if self.queue.is_empty() {
                 break;
             }
+            let depth = self.tuning.queue_depth;
             let mut views: Vec<NodeView> = self
                 .nodes
                 .iter()
                 .filter_map(|(id, n)| {
                     let slots = n.slots();
+                    let cap = slots * (1 + depth);
                     let used = n.assigned.len() as u32;
-                    (used < slots).then(|| NodeView {
+                    (used < cap).then(|| NodeView {
                         id: *id,
-                        free_slots: slots - used,
+                        free_slots: cap - used,
                         slots,
                         capabilities: n.caps.clone(),
+                        used,
+                        mean_task_ms: n.ewma_ms,
                     })
                 })
                 .collect();
+            if self.tuning.tail_holdback {
+                self.hold_back_slow(&mut views);
+            }
             if views.is_empty() {
                 break;
             }
@@ -493,6 +590,41 @@ impl Scheduler {
             });
         }
         out
+    }
+
+    /// Drop candidates that would only slow down the tail of the batch: nodes measured slower
+    /// than `holdback_ratio` x the best node while the queue is no longer than the number of
+    /// slots on strictly faster nodes (so those can absorb everything within about one of
+    /// their own task times).
+    fn hold_back_slow(&self, views: &mut Vec<NodeView>) {
+        let queued = self.queue.len() as u32;
+        let best = self
+            .nodes
+            .values()
+            .filter_map(|n| n.ewma_ms)
+            .fold(f64::INFINITY, f64::min);
+        if !best.is_finite() {
+            return;
+        }
+        let limit = best * self.tuning.holdback_ratio;
+        views.retain(|v| {
+            let Some(ms) = v.mean_task_ms else {
+                return true;
+            };
+            if ms <= limit {
+                return true;
+            }
+            let faster: u32 = self
+                .nodes
+                .values()
+                .filter(|n| {
+                    n.ewma_ms
+                        .is_some_and(|m| m * self.tuning.holdback_ratio < ms)
+                })
+                .map(|n| n.slots())
+                .sum();
+            queued > faster
+        });
     }
 
     fn matches(&self, node: NodeId, task: TaskId, attempt: u32) -> bool {
@@ -925,5 +1057,63 @@ mod tests {
         assert_eq!((info.cancelled, info.done), (3, true));
         assert!(s.schedule(0).is_empty());
         assert_eq!(s.on_result(nid(1), a.task_id, 1, vec![]), Report::Stale);
+    }
+
+    fn sched_with_speeds() -> (Scheduler, NodeId, NodeId) {
+        let mut s = Scheduler::with_policy(10_000, Box::new(SpeedAware));
+        let (slow, fast) = (nid(1), nid(2));
+        s.add_node(slow, "slow".into(), caps(2), false, 0);
+        s.add_node(fast, "fast".into(), caps(2), false, 0);
+        s.record_elapsed(slow, 100.0);
+        s.record_elapsed(fast, 40.0);
+        (s, slow, fast)
+    }
+
+    #[test]
+    fn speed_aware_prefers_fast_node_when_both_idle() {
+        let (mut s, slow, fast) = sched_with_speeds();
+        s.submit_job(spec(3));
+        let a = s.schedule(0);
+        let on = |n: NodeId| a.iter().filter(|x| x.node == n).count();
+        // fast fills its 2 slots first; the third task would be wave 2 there (80 ms) but depth
+        // is 0, so it lands on slow.
+        assert_eq!(on(fast), 2);
+        assert_eq!(on(slow), 1);
+    }
+
+    #[test]
+    fn queue_depth_allows_extra_tasks_per_slot() {
+        let (mut s, _slow, fast) = sched_with_speeds();
+        s.set_tuning(Tuning {
+            queue_depth: 1,
+            ..Tuning::default()
+        });
+        s.submit_job(spec(8));
+        let a = s.schedule(0);
+        assert_eq!(a.len(), 8); // capacity 2 nodes * 2 slots * 2
+        // wave model: fast (40 ms) takes 4 tasks (waves 1,1,2,2 = 40,40,80,80), slow gets the rest.
+        assert!(a.iter().filter(|x| x.node == fast).count() >= 4);
+    }
+
+    #[test]
+    fn tail_holdback_keeps_last_tasks_off_slow_node() {
+        let (_, slow, fast) = sched_with_speeds();
+        let mut s2 = Scheduler::with_policy(10_000, Box::new(SpeedAware));
+        s2.add_node(slow, "slow".into(), caps(2), false, 0);
+        s2.add_node(fast, "fast".into(), caps(2), false, 0);
+        s2.record_elapsed(slow, 100.0);
+        s2.record_elapsed(fast, 40.0);
+        s2.set_tuning(Tuning {
+            tail_holdback: true,
+            ..Tuning::default()
+        });
+        s2.submit_job(spec(2));
+        let a = s2.schedule(0);
+        assert_eq!(a.len(), 2);
+        assert!(a.iter().all(|x| x.node == fast), "tail went to slow node");
+        // With a deep queue the slow node is used.
+        s2.submit_job(spec(10));
+        let b = s2.schedule(0);
+        assert!(b.iter().any(|x| x.node == slow));
     }
 }

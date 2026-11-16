@@ -12,6 +12,16 @@ use opencompute::Cluster;
 use serde::Serialize;
 use std::time::Instant;
 
+struct Timing<'a>(&'a std::cell::RefCell<Vec<f64>>, Instant);
+impl Drop for Timing<'_> {
+    fn drop(&mut self) {
+        self.0.borrow_mut().push(self.1.elapsed().as_secs_f64() * 1e3);
+    }
+}
+fn scopeguard(v: &std::cell::RefCell<Vec<f64>>, t: Instant) -> Timing<'_> {
+    Timing(v, t)
+}
+
 #[path = "../../../examples/wasm-modules/nbody/src/force.rs"]
 mod force;
 
@@ -87,7 +97,10 @@ async fn main() -> Result<(), opencompute::Error> {
     let e0 = energy(&pos, &vel, eps2);
     let t0 = Instant::now();
     let mut acc = vec![0.0; 3 * n];
+    let times = std::cell::RefCell::new(Vec::<f64>::new());
     let force_eval = async |pos: &[f64], acc: &mut Vec<f64>| -> Result<(), opencompute::Error> {
+        let t = Instant::now();
+        let _g = scopeguard(&times, t);
         let blob: Vec<u8> = pos.iter().flat_map(|x| x.to_le_bytes()).collect();
         let inputs: Vec<Range> = ranges
             .iter()
@@ -110,6 +123,12 @@ async fn main() -> Result<(), opencompute::Error> {
         kick(&mut vel, &acc, dt);
     }
     let dist = t0.elapsed();
+    {
+        let mut v = times.borrow().clone();
+        let all = v.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>().join(" ");
+        v.sort_by(f64::total_cmp);
+        println!("per-step ms: {all}  (median {:.0})", v[v.len() / 2]);
+    }
     let e1 = energy(&pos, &vel, eps2);
 
     // Same integration in this process, one block.

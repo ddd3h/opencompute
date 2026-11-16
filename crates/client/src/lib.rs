@@ -52,6 +52,9 @@ pub struct ClientConfig {
     /// Delay every halo sent to another client by this long. Emulates a high-latency link for
     /// tests and benchmarks; zero (the default) sends immediately.
     pub emulated_halo_latency: Duration,
+    /// Make every task take this many times longer (the surplus is slept on the worker thread).
+    /// Emulates a slower machine for load-balancing tests; `1.0` (the default) is native speed.
+    pub emulated_slowdown: f64,
 }
 
 impl ClientConfig {
@@ -68,6 +71,7 @@ impl ClientConfig {
             network: NetworkConfig::default(),
             peer_addr_override: None,
             emulated_halo_latency: Duration::ZERO,
+            emulated_slowdown: 1.0,
         }
     }
 
@@ -103,6 +107,7 @@ pub struct Worker {
     pool: Arc<rayon::ThreadPool>,
     caps: NodeCapabilities,
     name: String,
+    slowdown: f64,
 }
 
 impl Worker {
@@ -128,6 +133,7 @@ impl Worker {
             pool: Arc::new(pool),
             caps,
             name: cfg.name.clone(),
+            slowdown: cfg.emulated_slowdown,
         }))
     }
 
@@ -311,6 +317,16 @@ where
     let mut blobs = BlobCache::new(worker.caps.allowed_memory_bytes / 4);
     let mut waiting_for_blob: HashMap<ModuleHash, Vec<TaskAssignment>> = HashMap::new();
     let mut blob_assembling: HashMap<ModuleHash, ModuleAssembly> = HashMap::new();
+    // Peer-assisted blob delivery: deadlines for blobs a peer will push, forwards we owe, and the
+    // wire form of recently received blobs (what we forward).
+    let mut blob_expect: HashMap<ModuleHash, Instant> = HashMap::new();
+    let mut blob_routes: HashMap<ModuleHash, Vec<PeerInfo>> = HashMap::new();
+    let mut wire_keep: std::collections::VecDeque<(ModuleHash, Arc<Vec<u8>>)> = Default::default();
+    let mut peer_assembling: HashMap<ModuleHash, ModuleAssembly> = HashMap::new();
+    let mut peer_blob_rx = match &worker.peers {
+        Some(p) => Some(p.blob_in.lock().await),
+        None => None,
+    };
     // Stateful parts: (job, part) -> (epoch, kernel).
     let mut parts: HashMap<(JobId, u32), (u32, SharedKernel)> = HashMap::new();
     // Direct-mode part actors; aborted when released, replaced, or the session ends.
@@ -337,7 +353,8 @@ where
             } else if let Some(h) = a.shared.filter(|h| !blobs.contains(h)) {
                 let first = !waiting_for_blob.contains_key(&h);
                 waiting_for_blob.entry(h).or_default().push(a);
-                if first {
+                if first && !blob_expect.get(&h).is_some_and(|d| *d > Instant::now()) {
+                    blob_expect.remove(&h);
                     send!(ClientMessage::BlobRequest(ModuleRequest { hash: h }));
                 }
             } else {
@@ -349,9 +366,76 @@ where
         }};
     }
 
+    // A blob arrived in full (wire form): decode, verify, cache, forward, and start waiting tasks.
+    macro_rules! blob_done {
+        ($h:expr, $wire:expr) => {{
+            let (h, wire): (ModuleHash, Vec<u8>) = ($h, $wire);
+            match blobwire::decode(&wire, MAX_BLOB_LEN) {
+                Err(e) => fail_waiting(&mut waiting_for_blob, "blob", h, &e, &mut tx).await,
+                Ok(bytes) if ModuleHash::of(&bytes) != h => {
+                    fail_waiting(&mut waiting_for_blob, "blob", h, "hash mismatch", &mut tx).await
+                }
+                Ok(bytes) => {
+                    blobs.insert(h, Arc::new(bytes));
+                    blob_expect.remove(&h);
+                    debug!(blob = %h, "blob cached");
+                    let wire = Arc::new(wire);
+                    if let (Some(net), Some(peers)) = (&worker.peers, blob_routes.remove(&h)) {
+                        for p in &peers {
+                            net.send_blob(p, h, &wire);
+                        }
+                    }
+                    wire_keep.retain(|(k, _)| *k != h);
+                    wire_keep.push_back((h, wire));
+                    while wire_keep.len() > 2 {
+                        wire_keep.pop_front();
+                    }
+                    send!(ClientMessage::BlobHave(h));
+                    for a in waiting_for_blob.remove(&h).unwrap_or_default() {
+                        dispatch!(a);
+                    }
+                }
+            }
+        }};
+    }
+
     let end = loop {
         tokio::select! {
+            Some(b) = async {
+                match peer_blob_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let h = b.hash;
+                if blobs.contains(&h) && !peer_assembling.contains_key(&h) { continue; }
+                let asm = peer_assembling.entry(h).or_insert_with(|| ModuleAssembly { total: b.total_len, buf: Vec::new() });
+                let ok = b.total_len == asm.total
+                    && b.total_len as usize <= MAX_BLOB_LEN + 16
+                    && b.offset == asm.buf.len() as u64
+                    && b.data.len() <= MODULE_CHUNK_LEN
+                    && asm.buf.len() + b.data.len() <= asm.total as usize;
+                if !ok {
+                    peer_assembling.remove(&h);
+                    continue;
+                }
+                asm.buf.extend_from_slice(&b.data);
+                if asm.buf.len() as u64 == asm.total {
+                    let wire = peer_assembling.remove(&h).expect("present").buf;
+                    blob_done!(h, wire);
+                }
+            }
             _ = ticker.tick() => {
+                // A peer that was expected to push a blob did not: ask the server.
+                let late: Vec<ModuleHash> = blob_expect
+                    .iter()
+                    .filter(|(h, d)| **d <= Instant::now() && waiting_for_blob.contains_key(h))
+                    .map(|(h, _)| *h)
+                    .collect();
+                for h in late {
+                    blob_expect.remove(&h);
+                    send!(ClientMessage::BlobRequest(ModuleRequest { hash: h }));
+                }
                 let mut r: Vec<_> = running.iter().map(|(t, a)| (*t, *a)).collect();
                 r.sort();
                 send!(ClientMessage::Heartbeat(Heartbeat { running: r }));
@@ -437,10 +521,12 @@ where
                     }
                     ServerMessage::BlobTransfer(c) => {
                         let h = c.hash;
-                        if !waiting_for_blob.contains_key(&h) { continue; }
+                        // Unsolicited pushes are fine (the server sends a blob ahead of the
+                        // first task that needs it); ones we already hold are skipped.
+                        if blobs.contains(&h) && !blob_assembling.contains_key(&h) { continue; }
                         let asm = blob_assembling.entry(h).or_insert_with(|| ModuleAssembly { total: c.total_len, buf: Vec::new() });
                         let ok = c.total_len == asm.total
-                            && c.total_len as usize <= MAX_BLOB_LEN
+                            && c.total_len as usize <= MAX_BLOB_LEN + 16
                             && c.offset == asm.buf.len() as u64
                             && c.data.len() <= MODULE_CHUNK_LEN
                             && asm.buf.len() + c.data.len() <= asm.total as usize;
@@ -451,16 +537,23 @@ where
                         }
                         asm.buf.extend_from_slice(&c.data);
                         if asm.buf.len() as u64 == asm.total {
-                            let bytes = blob_assembling.remove(&h).expect("present").buf;
-                            if ModuleHash::of(&bytes) != h {
-                                fail_waiting(&mut waiting_for_blob, "blob", h, "hash mismatch", &mut tx).await;
-                                continue;
+                            let wire = blob_assembling.remove(&h).expect("present").buf;
+                            blob_done!(h, wire);
+                        }
+                    }
+                    ServerMessage::BlobExpect(e) => {
+                        if !blobs.contains(&e.hash) {
+                            blob_expect.insert(e.hash, Instant::now() + Duration::from_millis(u64::from(e.wait_ms)));
+                        }
+                    }
+                    ServerMessage::BlobRoute(r) => {
+                        match (wire_keep.iter().find(|(k, _)| *k == r.hash), &worker.peers) {
+                            (Some((_, wire)), Some(net)) => {
+                                for p in &r.peers {
+                                    net.send_blob(p, r.hash, wire);
+                                }
                             }
-                            blobs.insert(h, Arc::new(bytes));
-                            debug!(blob = %h, "blob cached");
-                            for a in waiting_for_blob.remove(&h).unwrap_or_default() {
-                                dispatch!(a);
-                            }
+                            _ => blob_routes.entry(r.hash).or_default().extend(r.peers),
                         }
                     }
                     ServerMessage::BlobNotFound(h) => {
@@ -610,6 +703,7 @@ fn start_task(
     let mut limits = a.limits;
     limits.max_memory_bytes = limits.max_memory_bytes.min(per_task.max(1 << 20));
     let timeout = Duration::from_millis(a.timeout_ms).min(MAX_TASK_TIMEOUT);
+    let slowdown = worker.slowdown;
     worker.pool.spawn(move || {
         let t0 = Instant::now();
         // A panic inside a task must not take the worker down.
@@ -626,6 +720,9 @@ fn start_task(
                 None => w.executor.execute(&a.kind, &a.input, &limits, timeout),
             }
         }));
+        if slowdown > 1.0 {
+            std::thread::sleep(t0.elapsed().mul_f64(slowdown - 1.0));
+        }
         let msg = match r {
             Ok(Ok(output)) if output.len() <= MAX_PAYLOAD_LEN => Done::Result(TaskResult {
                 task_id: a.task_id,

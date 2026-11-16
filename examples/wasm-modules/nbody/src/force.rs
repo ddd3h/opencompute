@@ -174,7 +174,13 @@ mod tests {
         let r = accelerations_scalar(&pos, 3, 50, 1e-4);
         let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
         assert_eq!(bits(&r), bits(&accelerations(&pos, 3, 50, 1e-4)));
-        assert_eq!(bits(&r), bits(&accelerations_blocked::<8>(&pos, 3, 50, 1e-4)));
-        assert_eq!(bits(&r), bits(&accelerations_blocked::<3>(&pos, 3, 50, 1e-4)));
+        assert_eq!(
+            bits(&r),
+            bits(&accelerations_blocked::<8>(&pos, 3, 50, 1e-4))
+        );
+        assert_eq!(
+            bits(&r),
+            bits(&accelerations_blocked::<3>(&pos, 3, 50, 1e-4))
+        );
     }
 }

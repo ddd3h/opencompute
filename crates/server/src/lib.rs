@@ -41,6 +41,9 @@ pub struct ServerConfig {
     pub local_worker_cores: u32,
     /// A direct-mode stateful job without progress for this long is rolled back.
     pub stall_timeout: Duration,
+    /// Use the plain FIFO / least-loaded scheduler instead of the speed-aware tuned one
+    /// (for A/B benchmarks).
+    pub legacy_scheduler: bool,
 }
 
 impl ServerConfig {
@@ -53,6 +56,7 @@ impl ServerConfig {
             heartbeat_timeout: Duration::from_secs(6),
             local_worker_cores: 0,
             stall_timeout: Duration::from_secs(20),
+            legacy_scheduler: false,
         }
     }
 }
@@ -60,6 +64,30 @@ impl ServerConfig {
 struct Conn {
     session: u64,
     tx: mpsc::Sender<ServerMessage>,
+    /// Blobs already pushed on this session (the client may still have evicted them; it then
+    /// asks with a BlobRequest).
+    pushed: std::collections::HashSet<ModuleHash>,
+}
+
+/// Largest blob (in transfer chunks) pushed without being asked; bigger ones are fetched on
+/// demand so the bounded outbound queue cannot overflow.
+const MAX_PUSH_CHUNKS: usize = 32;
+
+/// How long a node waits for a peer to push a blob before asking the server.
+const BLOB_PEER_WAIT_MS: u32 = 2500;
+
+fn blob_chunks(hash: ModuleHash, wire: &[u8]) -> impl Iterator<Item = ServerMessage> + '_ {
+    let total = wire.len() as u64;
+    wire.chunks(MODULE_CHUNK_LEN)
+        .enumerate()
+        .map(move |(i, c)| {
+            ServerMessage::BlobTransfer(ModuleTransfer {
+                hash,
+                total_len: total,
+                offset: (i * MODULE_CHUNK_LEN) as u64,
+                data: c.to_vec(),
+            })
+        })
 }
 
 pub(crate) struct Inner {
@@ -68,6 +96,14 @@ pub(crate) struct Inner {
     pub modules: HashMap<ModuleHash, Arc<Vec<u8>>>,
     /// Shared input blobs, by BLAKE3 of their content (also on disk under `blobs/`).
     pub blobs: HashMap<ModuleHash, Arc<Vec<u8>>>,
+    /// Lazily built wire encodings of blobs (see blobwire).
+    pub(crate) blob_wire: HashMap<ModuleHash, Arc<Vec<u8>>>,
+    /// Measured server->node throughput of blob pushes (bytes/s, smoothed).
+    blob_bps: HashMap<NodeId, f64>,
+    /// When a blob push to a node started, with its wire size.
+    blob_sent_at: HashMap<(NodeId, ModuleHash), (std::time::Instant, usize)>,
+    /// Node that receives a blob from the server and forwards it to slower nodes.
+    blob_seed: HashMap<ModuleHash, NodeId>,
     next_session: u64,
     pub(crate) stateful: std::collections::BTreeMap<JobId, stateful::SJob>,
     /// Revision of stateful/persisted data outside the scheduler.
@@ -86,10 +122,87 @@ pub(crate) struct Inner {
 pub struct State {
     pub(crate) inner: Mutex<Inner>,
     pub(crate) wake: Notify,
+    /// Fired whenever task/job outcomes may have changed (wakes `Results` waiters).
+    pub(crate) changed: Notify,
     started: Instant,
     token: [u8; 16],
     cfg: ServerConfig,
     saved_rev: std::sync::atomic::AtomicU64,
+    /// `started`-relative ms of the last state save (throttle).
+    last_save_ms: std::sync::atomic::AtomicU64,
+}
+
+impl Inner {
+    /// Wire encoding of blob h (compressed when that helps), built once and cached.
+    pub(crate) fn wire_blob(&mut self, h: &ModuleHash) -> Option<Arc<Vec<u8>>> {
+        if let Some(w) = self.blob_wire.get(h) {
+            return Some(w.clone());
+        }
+        let w = Arc::new(blobwire::encode(self.blobs.get(h)?));
+        self.blob_wire.insert(*h, w.clone());
+        Some(w)
+    }
+
+    /// Push blob `h` (wire form) to `node` unasked. False if the outbound queue is full.
+    fn push_blob(&mut self, node: &NodeId, h: ModuleHash) -> bool {
+        let Some(wire) = self.wire_blob(&h) else {
+            return true;
+        };
+        let Some(c) = self.conns.get_mut(node) else {
+            return false;
+        };
+        if c.pushed.contains(&h) {
+            return true;
+        }
+        c.pushed.insert(h);
+        let ok = blob_chunks(h, &wire).all(|m| c.tx.try_send(m).is_ok());
+        if ok {
+            self.blobs_sent += 1;
+            self.blob_sent_at
+                .insert((*node, h), (std::time::Instant::now(), wire.len()));
+        }
+        ok
+    }
+
+    /// Should `node` get blob `h` from a faster peer instead of from the server? Returns that
+    /// seed (already pushed the blob). Only used once link speeds have been measured.
+    fn blob_route(&mut self, node: &NodeId, h: ModuleHash) -> Option<NodeId> {
+        let wire_len = self.wire_blob(&h)?.len();
+        if wire_len.div_ceil(MODULE_CHUNK_LEN) > MAX_PUSH_CHUNKS {
+            return None;
+        }
+        let seed = match self.blob_seed.get(&h) {
+            Some(s) if self.conns.contains_key(s) => *s,
+            _ => {
+                let best = self
+                    .conns
+                    .keys()
+                    .filter_map(|n| self.blob_bps.get(n).map(|b| (*n, *b)))
+                    .max_by(|a, b| a.1.total_cmp(&b.1))?;
+                self.blob_seed.insert(h, best.0);
+                best.0
+            }
+        };
+        if seed == *node {
+            return None;
+        }
+        let (mine, best) = (*self.blob_bps.get(node)?, *self.blob_bps.get(&seed)?);
+        if mine >= 0.5 * best || self.peer_addrs.get(node).is_none_or(|a| a.is_empty()) {
+            return None;
+        }
+        self.push_blob(&seed, h).then_some(seed)
+    }
+
+    /// Forget the blob everywhere.
+    pub(crate) fn drop_blob(&mut self, h: &ModuleHash) {
+        self.blobs.remove(h);
+        self.blob_wire.remove(h);
+        self.blob_seed.remove(h);
+        self.blob_sent_at.retain(|(_, bh), _| bh != h);
+        for c in self.conns.values_mut() {
+            c.pushed.remove(h);
+        }
+    }
 }
 
 impl State {
@@ -169,10 +282,18 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<ServerHandle> {
 
     let state = Arc::new(State {
         inner: Mutex::new(Inner {
-            sched: Scheduler::new(cfg.heartbeat_timeout.as_millis() as u64),
+            sched: if cfg.legacy_scheduler {
+                Scheduler::new(cfg.heartbeat_timeout.as_millis() as u64)
+            } else {
+                Scheduler::tuned(cfg.heartbeat_timeout.as_millis() as u64)
+            },
             conns: HashMap::new(),
             modules: HashMap::new(),
             blobs: HashMap::new(),
+            blob_wire: HashMap::new(),
+            blob_bps: HashMap::new(),
+            blob_sent_at: HashMap::new(),
+            blob_seed: HashMap::new(),
             next_session: 1,
             stateful: Default::default(),
             srev: 0,
@@ -185,10 +306,12 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<ServerHandle> {
             peer_addrs: HashMap::new(),
         }),
         wake: Notify::new(),
+        changed: Notify::new(),
         started: Instant::now(),
         token,
         cfg: cfg.clone(),
         saved_rev: std::sync::atomic::AtomicU64::new(u64::MAX),
+        last_save_ms: std::sync::atomic::AtomicU64::new(0),
     });
     persist::load(&state);
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -292,6 +415,43 @@ async fn dispatch_loop(state: Arc<State>) {
             }
         }
         for a in inner.sched.schedule(now) {
+            // Push a shared blob ahead of the first assignment that needs it: the stream is
+            // ordered, so the client has it when the Assign arrives and skips the request
+            // round trip.
+            let mut pushed_ok = true;
+            if let Some(h) = a.shared
+                && inner
+                    .conns
+                    .get(&a.node)
+                    .is_some_and(|c| !c.pushed.contains(&h))
+                && let Some(wire) = inner.wire_blob(&h)
+                && wire.len().div_ceil(MODULE_CHUNK_LEN) <= MAX_PUSH_CHUNKS
+            {
+                if let Some(seed) = inner.blob_route(&a.node, h) {
+                    // Slow link to the server: a faster node forwards the blob to it.
+                    let peer = PeerInfo {
+                        node: a.node,
+                        addr: inner.peer_addrs.get(&a.node).cloned().unwrap_or_default(),
+                    };
+                    if let Some(c) = inner.conns.get_mut(&a.node) {
+                        c.pushed.insert(h);
+                        pushed_ok =
+                            c.tx.try_send(ServerMessage::BlobExpect(BlobExpect {
+                                hash: h,
+                                wait_ms: BLOB_PEER_WAIT_MS,
+                            }))
+                            .is_ok();
+                    }
+                    if let Some(c) = inner.conns.get(&seed) {
+                        let _ = c.tx.try_send(ServerMessage::BlobRoute(BlobRoute {
+                            hash: h,
+                            peers: vec![peer],
+                        }));
+                    }
+                } else {
+                    pushed_ok = inner.push_blob(&a.node, h);
+                }
+            }
             let msg = ServerMessage::Assign(TaskAssignment {
                 job_id: a.job_id,
                 task_id: a.task_id,
@@ -303,11 +463,12 @@ async fn dispatch_loop(state: Arc<State>) {
                 timeout_ms: a.timeout_ms,
                 limits: a.limits,
             });
-            let sent = inner
-                .conns
-                .get(&a.node)
-                .map(|c| c.tx.try_send(msg).is_ok())
-                .unwrap_or(false);
+            let sent = pushed_ok
+                && inner
+                    .conns
+                    .get(&a.node)
+                    .map(|c| c.tx.try_send(msg).is_ok())
+                    .unwrap_or(false);
             if !sent {
                 // Outbound queue full or gone: drop the node; its tasks (incl. this one) are re-queued.
                 warn!(node = %a.node.short(), "cannot reach node, removing");
@@ -323,6 +484,7 @@ async fn dispatch_loop(state: Arc<State>) {
         }
         inner.s_tick(state.cfg.stall_timeout);
         drop(inner);
+        state.changed.notify_waiters();
         persist::maybe_save(&state);
     }
 }
@@ -382,6 +544,7 @@ where
         let new = Conn {
             session,
             tx: out_tx.clone(),
+            pushed: Default::default(),
         };
         if let Some(old) = inner.conns.insert(peer, new) {
             let _ = old.tx.try_send(ServerMessage::Shutdown {
@@ -451,6 +614,9 @@ where
                     );
                 } else if i.sched.on_result(peer, r.task_id, r.attempt, r.output) == Report::Stale {
                     debug!(task = %r.task_id, attempt = r.attempt, "stale result ignored");
+                } else {
+                    i.sched.record_elapsed(peer, r.elapsed_ms as f64);
+                    debug!(node = %peer.short(), ms = r.elapsed_ms, "task elapsed");
                 }
                 wake = true;
             }
@@ -485,10 +651,19 @@ where
                     }
                 }
             }
+            ClientMessage::BlobHave(h) => {
+                let mut g = state.lock();
+                if let Some((t0, len)) = g.blob_sent_at.remove(&(peer, h)) {
+                    let bps = len as f64 / t0.elapsed().as_secs_f64().max(1e-3);
+                    let e = g.blob_bps.entry(peer).or_insert(bps);
+                    *e = 0.5 * *e + 0.5 * bps;
+                    debug!(node = %peer.short(), mbps = bps / 1e6, "blob rate");
+                }
+            }
             ClientMessage::BlobRequest(m) => {
                 let bytes = {
                     let mut g = state.lock();
-                    let b = g.blobs.get(&m.hash).cloned();
+                    let b = g.wire_blob(&m.hash);
                     if b.is_some() {
                         g.blobs_sent += 1;
                     }
@@ -503,15 +678,8 @@ where
                         // heartbeat and result handling.
                         let tx = out_tx.clone();
                         tokio::spawn(async move {
-                            let total = b.len() as u64;
-                            for (i, chunk) in b.chunks(MODULE_CHUNK_LEN).enumerate() {
-                                let t = ModuleTransfer {
-                                    hash: m.hash,
-                                    total_len: total,
-                                    offset: (i * MODULE_CHUNK_LEN) as u64,
-                                    data: chunk.to_vec(),
-                                };
-                                if tx.send(ServerMessage::BlobTransfer(t)).await.is_err() {
+                            for msg in blob_chunks(m.hash, &b) {
+                                if tx.send(msg).await.is_err() {
                                     break;
                                 }
                             }
@@ -534,6 +702,7 @@ where
             ClientMessage::Join(_) => break "duplicate join".to_string(),
         }
         if wake {
+            state.changed.notify_waiters();
             state.wake.notify_one();
         }
     };

@@ -5,6 +5,7 @@
 //! * [`control`]  – admin / submission protocol spoken over the local control socket.
 //! * [`codec`]    – length-prefixed postcard framing with strict size limits.
 
+pub mod blobwire;
 pub mod codec;
 pub mod control;
 pub mod ids;

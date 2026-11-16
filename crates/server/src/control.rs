@@ -117,7 +117,7 @@ async fn handle(
             R::BlobStored(h)
         }
         ControlRequest::ReleaseBlob(h) => {
-            state.lock().blobs.remove(&h);
+            state.lock().drop_blob(&h);
             crate::persist::remove_blob(&state.cfg.data_dir, &h);
             R::Ok
         }
@@ -164,6 +164,10 @@ async fn handle(
         ControlRequest::Results { job, wait_ms } => {
             let deadline = Instant::now() + Duration::from_millis(wait_ms);
             loop {
+                // Register for the next change *before* inspecting state (no lost wake-up).
+                let notified = state.changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
                 {
                     let g = state.lock();
                     let Some(info) = g.sched.job_info(job, false) else {
@@ -174,7 +178,8 @@ async fn handle(
                         return R::Results { job: info, results };
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                let left = deadline.saturating_duration_since(Instant::now());
+                let _ = tokio::time::timeout(left.min(Duration::from_millis(200)), notified).await;
             }
         }
         ControlRequest::SubmitStateful(s) => match state.lock().submit_stateful(s) {
@@ -228,6 +233,7 @@ async fn handle(
         }
         ControlRequest::Cancel(j) => {
             let inflight = state.lock().sched.cancel_job(j);
+            state.changed.notify_waiters();
             let g = state.lock();
             for (n, t, a) in inflight {
                 if let Some(c) = g.conns_get(&n) {

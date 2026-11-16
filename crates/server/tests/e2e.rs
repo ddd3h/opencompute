@@ -209,6 +209,64 @@ async fn wasm_module_is_transferred_executed_and_sandboxed() {
     srv.shutdown().await;
 }
 
+/// A multi-chunk blob of f64 positions is pushed ahead of the assignment (compressed on the wire)
+/// and arrives bit-exact, with one transfer per worker and no extra request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_float_blob_is_pushed_compressed_and_bit_exact() {
+    let srv = server_in(tmp("pushblob"), 1).await;
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    let _c1 = client("P1", 2, &srv.ticket);
+    let _c2 = client("P2", 2, &srv.ticket);
+    wait_nodes(&cluster, 3).await;
+    let echo = cluster
+        .upload_module(
+            wat::parse_str(ECHO_WAT.replace(
+                "(memory (export \"memory\") 2)",
+                "(memory (export \"memory\") 64)",
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut s = 0x2545_f491_4f6c_dd1du64;
+    let shared: Vec<u8> = (0..150_000)
+        .flat_map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            ((s >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0).to_le_bytes()
+        })
+        .collect();
+    assert!(shared.len() > opencompute_protocol::MODULE_CHUNK_LEN);
+    let blob = cluster.upload_blob(shared.clone()).await.unwrap();
+    let inputs: Vec<Vec<u8>> = (0..8u8).map(|i| vec![i; 3]).collect();
+    let job = cluster
+        .submit_raw_shared(
+            TaskKind::Wasm(echo.hash),
+            Some(blob),
+            inputs.clone(),
+            &JobOptions::default(),
+        )
+        .await
+        .unwrap();
+    let out = cluster
+        .wait_raw(job, Duration::from_secs(60))
+        .await
+        .unwrap();
+    for (i, o) in out.iter().enumerate() {
+        let mut want = (shared.len() as u64).to_le_bytes().to_vec();
+        want.extend_from_slice(&shared);
+        want.extend_from_slice(&inputs[i]);
+        assert_eq!(o.as_ref().unwrap(), &want, "task {i}");
+    }
+    let sent = cluster.diag().await.unwrap().blobs_sent;
+    assert!(
+        sent <= 3,
+        "one transfer per node (2 clients + local worker), got {sent}"
+    );
+    srv.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shared_blob_is_fetched_once_per_worker_and_survives_restart() {
     let dir = tmp("shared");
@@ -832,4 +890,76 @@ async fn unreachable_peers_fall_back_to_server_relay() {
     assert!(info.rollbacks >= 2, "{info:?}");
     assert!(cluster.diag().await.unwrap().halos_relayed > 0);
     srv.shutdown().await;
+}
+
+/// Load-balancing benchmark on emulated heterogeneous clients (sleep tasks, no CPU used).
+/// Cluster (slots, slowdown vs fastest): 2 x 2.6, 8 x 1.3, 16 x 1.0, 8 x 1.44 => 34 slots,
+/// 28.5 fastest-core equivalents. One step = 11.4 fast-core-seconds => ideal ~400 ms.
+/// Run: `cargo test -p opencompute-server --test e2e --release hetero -- --ignored --nocapture`.
+async fn hetero_run(legacy: bool, blocks: usize, steps: usize) -> f64 {
+    let dir = tmp("hetero");
+    let mut cfg = ServerConfig::new(dir);
+    cfg.network = local_net();
+    cfg.heartbeat_interval = Duration::from_millis(500);
+    cfg.heartbeat_timeout = Duration::from_secs(5);
+    cfg.legacy_scheduler = legacy;
+    let srv = start(cfg).await.unwrap();
+    let cluster = Cluster::connect(&srv.control_path).await.unwrap();
+    let mut clients = vec![];
+    for (name, cores, slow) in [
+        ("gyh", 2, 2.6),
+        ("wasat", 8, 1.3),
+        ("anna", 16, 1.0),
+        ("procyon", 8, 1.44),
+    ] {
+        let mut c = ClientConfig::detect(name);
+        c.allowed_cores = cores;
+        c.max_concurrent_tasks = cores;
+        c.emulated_slowdown = slow;
+        c.cache_dir = Some(tmp(name));
+        c.network = local_net();
+        let (stop, rx) = watch::channel(false);
+        let task = tokio::spawn(run_client(c, generate_secret(), srv.ticket.clone(), rx));
+        clients.push(TestClient { task, stop });
+    }
+    wait_nodes(&cluster, 4).await;
+    let work_ms = 11_400.0 / blocks as f64; // per-task time on the fastest core
+    let mut times = vec![];
+    for _ in 0..steps {
+        let inputs: Vec<(u64, u64)> = (0..blocks)
+            .map(|i| (work_ms.round() as u64, i as u64))
+            .collect();
+        let t = std::time::Instant::now();
+        let out: Vec<u64> = cluster
+            .map_with(
+                TaskKind::Builtin("sleep_square".into()),
+                inputs,
+                &JobOptions::default(),
+            )
+            .await
+            .unwrap();
+        times.push(t.elapsed().as_secs_f64() * 1e3);
+        assert_eq!(out.len(), blocks);
+    }
+    for c in &clients {
+        let _ = c.stop.send(true);
+    }
+    srv.shutdown().await;
+    // Skip the first step (speed estimates warm up), average the rest.
+    times[1..].iter().sum::<f64>() / (times.len() - 1) as f64
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "benchmark"]
+async fn hetero_load_balance_benchmark() {
+    let old = hetero_run(true, 34, 6).await;
+    println!("legacy scheduler,  34 blocks (=slots): {old:7.1} ms/step");
+    let mut best = f64::MAX;
+    for blocks in [68, 136, 272, 544] {
+        let legacy = hetero_run(true, blocks, 6).await;
+        let tuned = hetero_run(false, blocks, 6).await;
+        println!("{blocks:4} blocks: legacy {legacy:7.1} ms   tuned {tuned:7.1} ms");
+        best = best.min(tuned);
+    }
+    assert!(best < old * 0.85, "tuned {best} vs old {old}");
 }

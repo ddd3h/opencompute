@@ -94,6 +94,22 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     o.open(path)?.write_all(data)
 }
 
+/// QUIC settings tuned for bulk shipping (per-step blobs, results) over 10-100 ms links.
+///
+/// The defaults assume ~100 ms RTT and a 100 Mbit/s stream. Larger flow-control windows keep a
+/// single stream from stalling on a fast long path, and a smaller initial RTT lets loss
+/// recovery start sooner on the paths this system actually uses. Memory is only used when data
+/// is in flight.
+fn transport_config() -> iroh::endpoint::QuicTransportConfig {
+    use iroh::endpoint::VarInt;
+    iroh::endpoint::QuicTransportConfig::builder()
+        .stream_receive_window(VarInt::from_u32(16 << 20))
+        .receive_window(VarInt::from_u32(64 << 20))
+        .send_window(64 << 20)
+        .initial_rtt(Duration::from_millis(50))
+        .build()
+}
+
 /// Bind an iroh endpoint. `accept` registers our ALPN so the endpoint can be dialled.
 pub async fn bind(
     secret: SecretKey,
@@ -119,7 +135,7 @@ pub async fn bind_alpns(
     } else {
         Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled)
     };
-    b = b.secret_key(secret);
+    b = b.secret_key(secret).transport_config(transport_config());
     if !alpns.is_empty() {
         b = b.alpns(alpns);
     }

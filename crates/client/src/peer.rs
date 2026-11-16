@@ -9,7 +9,9 @@
 
 use opencompute_network::{decode_addr, dial_peer};
 use opencompute_protocol::codec::{read_frame, write_frame};
-use opencompute_protocol::{JobId, NodeId, PeerInfo, PeerMessage};
+use opencompute_protocol::{
+    JobId, MODULE_CHUNK_LEN, ModuleHash, NodeId, PeerBlob, PeerInfo, PeerMessage,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -38,7 +40,10 @@ impl Mailbox {
             step,
             side,
             data,
-        } = m;
+        } = m
+        else {
+            return;
+        };
         let mut g = self.map.lock().unwrap_or_else(|p| p.into_inner());
         if g.len() >= MAX_MAILBOX_ENTRIES {
             return; // flooding protection
@@ -72,6 +77,8 @@ pub struct PeerNet {
     pub(crate) mailbox: Arc<Mailbox>,
     links: Mutex<HashMap<NodeId, mpsc::Sender<PeerMessage>>>,
     addr_override: Option<Vec<u8>>,
+    /// Blob chunks forwarded to us by peers (consumed by the session loop).
+    pub(crate) blob_in: tokio::sync::Mutex<mpsc::UnboundedReceiver<PeerBlob>>,
     /// Emulated one-way latency added to halos sent to other clients.
     latency: std::time::Duration,
 }
@@ -86,7 +93,9 @@ impl PeerNet {
         latency: std::time::Duration,
     ) -> Arc<Self> {
         let me = opencompute_network::node_id(ep.id());
+        let (blob_tx, blob_rx) = mpsc::unbounded_channel::<PeerBlob>();
         let net = Arc::new(Self {
+            blob_in: tokio::sync::Mutex::new(blob_rx),
             ep: ep.clone(),
             me,
             mailbox: Arc::new(Mailbox::default()),
@@ -98,16 +107,23 @@ impl PeerNet {
         tokio::spawn(async move {
             while let Some(incoming) = ep.accept().await {
                 let mailbox = mailbox.clone();
+                let blob_tx = blob_tx.clone();
                 tokio::spawn(async move {
                     let Ok(conn) = incoming.await else { return };
                     let from = opencompute_network::node_id(conn.remote_id());
                     while let Ok(mut rx) = conn.accept_uni().await {
                         let mailbox = mailbox.clone();
+                        let blob_tx = blob_tx.clone();
                         tokio::spawn(async move {
                             while let Ok(m) =
                                 read_frame::<_, PeerMessage>(&mut rx, MAX_PEER_FRAME).await
                             {
-                                mailbox.put(from, m);
+                                match m {
+                                    PeerMessage::Blob(b) => {
+                                        let _ = blob_tx.send(b);
+                                    }
+                                    m => mailbox.put(from, m),
+                                }
                             }
                         });
                     }
@@ -136,6 +152,22 @@ impl PeerNet {
     /// This worker's node id.
     pub fn id(&self) -> NodeId {
         self.me
+    }
+
+    /// Forward a blob (wire encoding) to `dst` in transfer-sized chunks.
+    pub fn send_blob(self: &Arc<Self>, dst: &PeerInfo, hash: ModuleHash, wire: &[u8]) {
+        let total = wire.len() as u64;
+        for (i, c) in wire.chunks(MODULE_CHUNK_LEN).enumerate() {
+            self.send(
+                dst,
+                PeerMessage::Blob(PeerBlob {
+                    hash,
+                    total_len: total,
+                    offset: (i * MODULE_CHUNK_LEN) as u64,
+                    data: c.to_vec(),
+                }),
+            );
+        }
     }
 
     /// Send a halo to the node described by `dst` (in-process if it is us).
