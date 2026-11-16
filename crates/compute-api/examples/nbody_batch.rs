@@ -1,0 +1,154 @@
+//! All-pairs N-body simulation where every force evaluation is a batch of WASM tasks.
+//!
+//! ```text
+//! (cd examples/wasm-modules && cargo build --release --target wasm32-unknown-unknown)
+//! cargo run --release -p opencompute-compute-api --example nbody_batch -- [N STEPS BLOCKS]
+//! ```
+//! Each step ships all positions to every block (`3 * N * 8` bytes per task, at most 2 MiB, so
+//! `N <= 87_000`) and gets the accelerations of one block of particles back. Leapfrog
+//! (kick-drift-kick) integration runs here. The result is compared bit for bit with the same
+//! integration done in this process, and the wall times are printed.
+use opencompute::Cluster;
+use serde::Serialize;
+use std::time::Instant;
+
+#[path = "../../../examples/wasm-modules/nbody/src/force.rs"]
+mod force;
+
+#[derive(Serialize)]
+struct Block<'a> {
+    pos: &'a [f64],
+    start: u32,
+    end: u32,
+    eps2: f64,
+}
+
+/// Deterministic initial condition: uniform cube, small random velocities.
+fn initial(n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut s = 0x2545_f491_4f6c_dd1du64;
+    let mut rnd = move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        (s >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
+    let pos = (0..3 * n).map(|_| rnd()).collect();
+    let vel = (0..3 * n).map(|_| 0.1 * rnd()).collect();
+    (pos, vel)
+}
+
+fn energy(pos: &[f64], vel: &[f64], eps2: f64) -> f64 {
+    let n = pos.len() / 3;
+    let m = 1.0 / n as f64;
+    let kin: f64 = vel.iter().map(|v| 0.5 * m * v * v).sum();
+    let mut pot = 0.0;
+    for i in 0..n {
+        for j in i + 1..n {
+            let d: f64 = (0..3)
+                .map(|k| (pos[3 * i + k] - pos[3 * j + k]).powi(2))
+                .sum();
+            pot -= m * m / (d + eps2).sqrt();
+        }
+    }
+    kin + pot
+}
+
+fn kick(vel: &mut [f64], acc: &[f64], dt: f64) {
+    for (v, a) in vel.iter_mut().zip(acc) {
+        *v += 0.5 * dt * a;
+    }
+}
+
+fn drift(pos: &mut [f64], vel: &[f64], dt: f64) {
+    for (x, v) in pos.iter_mut().zip(vel) {
+        *x += dt * v;
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), opencompute::Error> {
+    let arg = |i: usize, d: usize| {
+        std::env::args()
+            .nth(i)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(d)
+    };
+    let (n, steps, blocks) = (arg(1, 4096), arg(2, 10), arg(3, 16));
+    let (eps2, dt) = (0.05f64 * 0.05, 0.01f64);
+    assert!(
+        n * 24 < (2 << 20) - 64,
+        "positions must fit one task input (2 MiB)"
+    );
+    let cluster = Cluster::connect_default().await?;
+    let module = cluster
+        .load_module("examples/wasm-modules/target/wasm32-unknown-unknown/release/nbody.wasm")
+        .await?;
+    let ranges: Vec<(usize, usize)> = (0..blocks)
+        .map(|b| (b * n / blocks, (b + 1) * n / blocks))
+        .filter(|(a, b)| b > a)
+        .collect();
+
+    let (mut pos, mut vel) = initial(n);
+    let e0 = energy(&pos, &vel, eps2);
+    let t0 = Instant::now();
+    let mut acc = vec![0.0; 3 * n];
+    let force_eval = async |pos: &[f64], acc: &mut Vec<f64>| -> Result<(), opencompute::Error> {
+        let inputs: Vec<Block> = ranges
+            .iter()
+            .map(|&(a, b)| Block {
+                pos,
+                start: a as u32,
+                end: b as u32,
+                eps2,
+            })
+            .collect();
+        let parts: Vec<Vec<f64>> = cluster.map(&module, inputs).await?;
+        acc.clear();
+        acc.extend(parts.into_iter().flatten());
+        Ok(())
+    };
+    force_eval(&pos, &mut acc).await?;
+    for _ in 0..steps {
+        kick(&mut vel, &acc, dt);
+        drift(&mut pos, &vel, dt);
+        force_eval(&pos, &mut acc).await?;
+        kick(&mut vel, &acc, dt);
+    }
+    let dist = t0.elapsed();
+    let e1 = energy(&pos, &vel, eps2);
+
+    // Same integration in this process, one block.
+    let t1 = Instant::now();
+    let (mut rp, mut rv) = initial(n);
+    let mut ra = force::accelerations(&rp, 0, n, eps2);
+    for _ in 0..steps {
+        kick(&mut rv, &ra, dt);
+        drift(&mut rp, &rv, dt);
+        ra = force::accelerations(&rp, 0, n, eps2);
+        kick(&mut rv, &ra, dt);
+    }
+    let local = t1.elapsed();
+
+    let pairs = (n as f64) * (n as f64) * (steps + 1) as f64;
+    println!("N={n} steps={steps} blocks={}", ranges.len());
+    println!(
+        "cluster: {dist:.2?} ({:.1} ms/step, {:.2} Ginteractions/s)",
+        dist.as_secs_f64() * 1e3 / steps as f64,
+        pairs / dist.as_secs_f64() / 1e9
+    );
+    println!(
+        "local  : {local:.2?} (1 thread, native; {:.2} Ginteractions/s)",
+        pairs / local.as_secs_f64() / 1e9
+    );
+    println!(
+        "speed-up vs local: {:.2}x",
+        local.as_secs_f64() / dist.as_secs_f64()
+    );
+    println!("energy drift: {:.3e}", (e1 - e0) / e0.abs());
+    let same = pos.iter().zip(&rp).all(|(a, b)| a.to_bits() == b.to_bits());
+    println!("positions bit-identical to local run: {same}");
+    if !same {
+        std::process::exit(1);
+    }
+    Ok(())
+}

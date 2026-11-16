@@ -1,7 +1,7 @@
 # Separate workspace: these crates target wasm32-unknown-unknown.
 [workspace]
 resolver = "2"
-members = ["hello-world", "fibonacci"]
+members = ["hello-world", "fibonacci", "nbody"]
 
 [workspace.dependencies]
 opencompute-guest = { path = "../../crates/guest" }

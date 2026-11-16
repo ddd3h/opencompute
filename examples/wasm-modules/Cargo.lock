@@ -95,6 +95,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nbody"
+version = "0.1.0"
+dependencies = [
+ "opencompute-guest",
+ "postcard",
+ "serde",
+]
+
+[[package]]
 name = "opencompute-guest"
 version = "0.1.0"
 
