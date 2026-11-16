@@ -1,4 +1,4 @@
-//! All-pairs N-body simulation where every force evaluation is a batch of WASM tasks.
+//! All-pairs N-body simulation using WASM tasks (or native tasks with `NBODY_NATIVE=1`).
 //!
 //! ```text
 //! (cd examples/wasm-modules && cargo build --release --target wasm32-unknown-unknown)
@@ -8,14 +8,16 @@
 //! sends one small task per block of particles, which returns that block's accelerations. Leapfrog
 //! (kick-drift-kick) integration runs here. The result is compared bit for bit with the same
 //! integration done in this process, and the wall times are printed.
-use opencompute::Cluster;
+use opencompute::{Cluster, TaskKind};
 use serde::Serialize;
 use std::time::Instant;
 
 struct Timing<'a>(&'a std::cell::RefCell<Vec<f64>>, Instant);
 impl Drop for Timing<'_> {
     fn drop(&mut self) {
-        self.0.borrow_mut().push(self.1.elapsed().as_secs_f64() * 1e3);
+        self.0
+            .borrow_mut()
+            .push(self.1.elapsed().as_secs_f64() * 1e3);
     }
 }
 fn scopeguard(v: &std::cell::RefCell<Vec<f64>>, t: Instant) -> Timing<'_> {
@@ -85,9 +87,18 @@ async fn main() -> Result<(), opencompute::Error> {
     let (n, steps, blocks) = (arg(1, 4096), arg(2, 10), arg(3, 16));
     let (eps2, dt) = (0.05f64 * 0.05, 0.01f64);
     let cluster = Cluster::connect_default().await?;
-    let module = cluster
-        .load_module("examples/wasm-modules/target/wasm32-unknown-unknown/release/nbody.wasm")
-        .await?;
+    let kind = if std::env::var("NBODY_NATIVE").as_deref() == Ok("1") {
+        TaskKind::Builtin("nbody_force".into())
+    } else {
+        TaskKind::Wasm(
+            cluster
+                .load_module(
+                    "examples/wasm-modules/target/wasm32-unknown-unknown/release/nbody.wasm",
+                )
+                .await?
+                .hash,
+        )
+    };
     let ranges: Vec<(usize, usize)> = (0..blocks)
         .map(|b| (b * n / blocks, (b + 1) * n / blocks))
         .filter(|(a, b)| b > a)
@@ -110,7 +121,7 @@ async fn main() -> Result<(), opencompute::Error> {
                 eps2,
             })
             .collect();
-        let parts: Vec<Vec<f64>> = cluster.map_shared(&module, blob, inputs).await?;
+        let parts: Vec<Vec<f64>> = cluster.map_shared_with(kind.clone(), blob, inputs).await?;
         acc.clear();
         acc.extend(parts.into_iter().flatten());
         Ok(())
@@ -125,7 +136,11 @@ async fn main() -> Result<(), opencompute::Error> {
     let dist = t0.elapsed();
     {
         let mut v = times.borrow().clone();
-        let all = v.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>().join(" ");
+        let all = v
+            .iter()
+            .map(|x| format!("{x:.0}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         v.sort_by(f64::total_cmp);
         println!("per-step ms: {all}  (median {:.0})", v[v.len() / 2]);
     }

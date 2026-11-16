@@ -227,7 +227,7 @@ enum TaskKind {
 }
 ```
 
-* `Builtin` names a function compiled into the client (`prime_count`, `sleep_square` in the current
+* `Builtin` names a function compiled into the client (`prime_count`, `sleep_square`, `echo`, `nbody_force` in the current
   runtime). An unknown name becomes a task failure.
 * `Wasm` names a module by hash. If the client does not have it, it requests it from the server.
 
@@ -465,7 +465,7 @@ rejection. Reason strings are informational and may change.
 | `task_id` | `TaskId` | Task identity. |
 | `attempt` | `u32` | Attempt counter, starting at 1 and incremented on every dispatch. |
 | `kind` | `TaskKind` | Built-in or WASM module. |
-| `shared` | `Option<ModuleHash>` | Shared input blob (v5). WASM tasks only. |
+| `shared` | `Option<ModuleHash>` | Shared input blob (v5). |
 | `input` | `Vec<u8>` | Task input; at most `MAX_PAYLOAD_LEN`. |
 | `input_hash` | `[u8; 32]` | BLAKE3-256 of `input`. |
 | `timeout_ms` | `u64` | Wall-clock budget. |
@@ -473,7 +473,7 @@ rejection. Reason strings are informational and may change.
 
 The worker verifies the input size and hash before starting; a mismatch produces `TaskFailed`
 (`input corrupted or oversized`). If the WASM module is missing, the assignment waits for a module
-transfer, then for its shared blob (`BlobRequest` → `BlobTransfer` chunks, verified against the hash, cached per worker). The guest input is then `u64` little-endian shared length, shared bytes, task input. `Assign` and `CancelTask` share one ordered stream, so their relative order is preserved.
+transfer, then for its shared blob (`BlobRequest` → `BlobTransfer` chunks, verified against the hash, cached per worker). For WASM, the guest input is then `u64` little-endian shared length, shared bytes, task input. Builtins receive shared bytes and task input separately. `nbody_force` takes raw little-endian f64 xyz positions in the shared blob, postcard `(u32 start, u32 end, f64 eps2)` as task input, and returns a postcard `Vec<f64>` of xyz accelerations. `Assign` and `CancelTask` share one ordered stream, so their relative order is preserved.
 
 #### `ModuleTransfer` (variant 3)
 
@@ -951,7 +951,7 @@ protocol and has no authentication beyond file-system permissions.
 | Field | Type | Semantics |
 |---|---|---|
 | `kind` | `TaskKind` | Shared by all tasks. |
-| `shared` | `Option<ModuleHash>` | Blob uploaded earlier with `UploadBlob`, given to every task (v5). WASM only. |
+| `shared` | `Option<ModuleHash>` | Blob uploaded earlier with `UploadBlob`, given to every task (v5). |
 | `inputs` | `Vec<Vec<u8>>` | One input per task, in submission order. |
 | `timeout_ms` | `u64` | Per-task wall-clock budget. |
 | `max_attempts` | `u32` | Maximum counted failures per task. |
@@ -962,7 +962,7 @@ protocol and has no authentication beyond file-system permissions.
 * `1 <= inputs.len() <= 1_000_000` and every input `<= MAX_PAYLOAD_LEN`;
 * `timeout_ms > 0` and `max_attempts > 0`;
 * a `Wasm(hash)` module must already have been uploaded to this server;
-* a `shared` blob must have been uploaded and `kind` must be `Wasm`;
+* a `shared` blob must have been uploaded;
 * a `Builtin(name)` name must be non-empty and at most 64 bytes.
 
 Submission creates a new job every time; there is **no idempotency key**, so retrying a `Submit`

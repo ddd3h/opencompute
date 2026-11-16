@@ -198,7 +198,8 @@ pub struct TaskAssignment {
     /// What to run.
     pub kind: TaskKind,
     /// Shared input blob (hash). The worker fetches it once and caches it; the guest receives it
-    /// together with `input` (see `opencompute-guest::export_task_shared!`). WASM tasks only.
+    /// together with `input` (see `opencompute-guest::export_task_shared!`). Builtins receive
+    /// shared bytes and task input separately.
     pub shared: Option<ModuleHash>,
     /// Input bytes.
     pub input: Vec<u8>,

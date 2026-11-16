@@ -212,7 +212,7 @@ impl Cluster {
         self.submit_raw_shared(kind, None, inputs, o).await
     }
 
-    /// Like [`Cluster::submit_raw`]; every task also receives the blob `shared` (WASM only; the
+    /// Like [`Cluster::submit_raw`]; every task also receives the blob `shared` (the
     /// guest uses `opencompute_guest::export_task_shared!`).
     pub async fn submit_raw_shared(
         &self,
@@ -317,6 +317,17 @@ impl Cluster {
         I: Serialize,
         O: DeserializeOwned,
     {
+        self.map_shared_with(TaskKind::Wasm(module.hash), shared, inputs)
+            .await
+    }
+
+    /// Run tasks of an explicit kind with the same raw shared blob.
+    pub async fn map_shared_with<I: Serialize, O: DeserializeOwned>(
+        &self,
+        kind: TaskKind,
+        shared: Vec<u8>,
+        inputs: Vec<I>,
+    ) -> Result<Vec<O>, Error> {
         let o = JobOptions::default();
         let raw: Vec<Vec<u8>> = inputs
             .iter()
@@ -326,9 +337,7 @@ impl Cluster {
             .collect::<Result<_, _>>()?;
         let blob = self.upload_blob(shared).await?;
         let res = async {
-            let job = self
-                .submit_raw_shared(TaskKind::Wasm(module.hash), Some(blob), raw, &o)
-                .await?;
+            let job = self.submit_raw_shared(kind, Some(blob), raw, &o).await?;
             self.wait_raw(job, o.wait).await
         }
         .await;

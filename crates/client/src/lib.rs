@@ -338,13 +338,7 @@ where
     macro_rules! dispatch {
         ($a:expr) => {{
             let a: TaskAssignment = $a;
-            if a.shared.is_some() && !matches!(a.kind, TaskKind::Wasm(_)) {
-                send!(ClientMessage::TaskFailed(TaskFailed {
-                    task_id: a.task_id,
-                    attempt: a.attempt,
-                    error: "shared input needs a WASM task".into()
-                }));
-            } else if let Some(h) = worker.executor.missing_module(&a.kind) {
+            if let Some(h) = worker.executor.missing_module(&a.kind) {
                 let first = !waiting_for_module.contains_key(&h);
                 waiting_for_module.entry(h).or_default().push(a);
                 if first {
@@ -708,6 +702,13 @@ fn start_task(
         let t0 = Instant::now();
         // A panic inside a task must not take the worker down.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let TaskKind::Builtin(name) = &a.kind {
+                return opencompute_runtime::builtin::run_shared(
+                    name,
+                    shared.as_deref().map(Vec::as_slice).unwrap_or_default(),
+                    &a.input,
+                );
+            }
             match &shared {
                 // Guest input = u64 LE shared length, shared bytes, task input.
                 Some(s) => {

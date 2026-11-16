@@ -123,7 +123,7 @@ pub struct ServerStats {
 pub struct SubmitJob {
     /// Execution kind, shared by all tasks.
     pub kind: TaskKind,
-    /// Shared blob given to every task (uploaded earlier with `UploadBlob`). WASM only.
+    /// Shared blob given to every task (uploaded earlier with `UploadBlob`).
     pub shared: Option<ModuleHash>,
     /// One input per task.
     pub inputs: Vec<Vec<u8>>,

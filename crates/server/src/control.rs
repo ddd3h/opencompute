@@ -132,13 +132,10 @@ async fn handle(
                 return R::Error("timeout_ms and max_attempts must be > 0".into());
             }
             let mut g = state.lock();
-            if let Some(h) = &s.shared {
-                if !matches!(s.kind, TaskKind::Wasm(_)) {
-                    return R::Error("a shared blob needs a WASM task".into());
-                }
-                if !g.blobs.contains_key(h) {
-                    return R::Error(format!("blob {h} not uploaded"));
-                }
+            if let Some(h) = &s.shared
+                && !g.blobs.contains_key(h)
+            {
+                return R::Error(format!("blob {h} not uploaded"));
             }
             match &s.kind {
                 TaskKind::Wasm(h) if !g.modules.contains_key(h) => {

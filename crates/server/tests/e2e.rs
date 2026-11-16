@@ -1,5 +1,8 @@
 //! End-to-end tests: real iroh/QUIC on localhost (no relay, no Internet), real server, real clients.
 
+#[path = "../../../examples/wasm-modules/nbody/src/force.rs"]
+mod force;
+
 use opencompute::{Cluster, JobOptions, TaskKind};
 use opencompute_client::{ClientConfig, ClientError, run_client};
 use opencompute_network::{NetworkConfig, Ticket, generate_secret};
@@ -317,17 +320,37 @@ async fn shared_blob_is_fetched_once_per_worker_and_survives_restart() {
         )
         .await;
     assert!(r.is_err(), "released blob must be refused");
-    // Shared blobs need a WASM task.
+    // Builtins receive task input separately from the shared blob.
     let b2 = cluster.upload_blob(shared.clone()).await.unwrap();
     let r = cluster
         .submit_raw_shared(
-            TaskKind::Builtin("prime_count".into()),
+            TaskKind::Builtin("echo".into()),
             Some(b2),
             vec![vec![1]],
             &JobOptions::default(),
         )
         .await;
-    assert!(r.is_err(), "builtin tasks cannot take a shared blob");
+    let out = cluster
+        .wait_raw(r.unwrap(), Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(out[0].as_ref().unwrap(), &[1]);
+    let positions: Vec<f64> = (0..3 * 65).map(|i| (i as f64).sin()).collect();
+    let bytes = positions.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let parts: Vec<Vec<f64>> = cluster
+        .map_shared_with(
+            TaskKind::Builtin("nbody_force".into()),
+            bytes,
+            vec![(0u32, 9u32, 0.0025f64), (9, 65, 0.0025)],
+        )
+        .await
+        .unwrap();
+    let actual: Vec<_> = parts.into_iter().flatten().map(f64::to_bits).collect();
+    let expected: Vec<_> = force::accelerations(&positions, 0, 65, 0.0025)
+        .into_iter()
+        .map(f64::to_bits)
+        .collect();
+    assert_eq!(actual, expected);
     srv.shutdown().await;
 
     // Restart: the blob is still there.
